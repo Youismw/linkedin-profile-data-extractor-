@@ -69,6 +69,30 @@ flowchart TD
 
 ---
 
+## Why Automated Login (Headless Password Automation) is Explicitly Disallowed
+
+A common question during engineering review is: *"Why does the tool require a one-time manual login step instead of accepting email and password in a config or environment file and logging in automatically?"*
+
+Automated credential injection was evaluated during architecture design and **explicitly rejected** for four fundamental technical, security, and operational reasons:
+
+### 1. Bot Detection & Behavioral Fingerprinting (Arkose Labs / CAPTCHA)
+- **Keystroke & Automation Detection**: LinkedIn monitors DOM-level interaction patterns, CDP (Chrome DevTools Protocol) automation flags, and typing velocity. When an automated script populates username and password fields headlessly, LinkedIn's fraud detection engine triggers immediate challenge checkpoints (`/checkpoint/challenge/`).
+- **Dynamic Challenges**: These challenges require solving interactive Arkose Labs puzzles ("Pick the image with the correct orientation") or entering an Out-Of-Band (OOB) verification code. A headless script cannot solve these, causing automated authentication to fail immediately and reliably.
+
+### 2. Multi-Factor Authentication (MFA / 2FA) & Device Verification
+- Modern enterprise and personal LinkedIn accounts enforce Two-Factor Authentication (authenticator apps, SMS OTP, or email verification codes) when an unrecognized device fingerprint or browser context connects.
+- Programmatic credential submission cannot fulfill 2FA steps without human intervention. Attempting to bypass or script around 2FA violates basic security design.
+
+### 3. Severe Security & Compliance Vulnerabilities (CWE-256 / OWASP)
+- **Credential Storage Risk**: Storing plaintext or reversibly encrypted passwords in configuration files (`config.toml`), environment variables, or flat files introduces critical credential exposure risks (CWE-256: Unprotected Storage of Credentials).
+- **Zero-Knowledge Architecture**: By using manual interactive login, the application adheres to a zero-knowledge credential architecture: **the codebase never asks for, reads, transmits, or stores passwords**. Only the resulting short-lived session cookies and localStorage tokens are saved to `.auth/state.json`.
+
+### 4. Account Lockout & Fraud Flag Risk
+- LinkedIn's security algorithms aggressively flag accounts that submit repeated programmatic authentication attempts from datacenter or automated IPs. Multiple failed or suspicious automated logins risk **permanent account suspension** or identity verification lockouts.
+- In contrast, a 30-second manual login legitimately establishes a valid session context from the user's desktop, which can then be safely reused across hundreds of automated profile extractions without raising fraud alerts.
+
+---
+
 ## Target Production Transition Plan
 
 ```mermaid

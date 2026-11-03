@@ -52,7 +52,22 @@ Before this system can be approved for production or team-wide use, leadership m
 
 ---
 
-## 4. Three-Minute Live Demo Script
+## 4. Senior Reviewer FAQ: Why Isn't Login Automated With Email & Password?
+
+**Question you may be asked by seniors/managers:**  
+*"Why didn't you just add `email` and `password` to `config.toml` or `.env` and have the script log in automatically?"*
+
+**Recommended Answer (Cheat Sheet for Rohit):**
+> "We intentionally chose a one-time manual login rather than scripted password entry for three key engineering reasons:
+> 
+> 1. **Bot Detection & 2FA**: Programmatically typing passwords into LinkedIn immediately triggers anti-bot checkpoints (Arkose Labs puzzles, CAPTCHA, or email/SMS OTP). Because automated scripts cannot solve dynamic visual challenges or 2FA, automated login breaks immediately.
+> 2. **Security by Design (Zero-Knowledge Credentials)**: Storing passwords in flat files or environment variables is a major security liability (CWE-256). By design, our application never handles, sees, or stores LinkedIn passwords.
+> 3. **Session Reusability**: The manual step takes only 30 seconds once. Playwright saves the authenticated session tokens (`.auth/state.json`), and the entire extraction pipeline then runs 100% automatically in headless mode without ever prompting for login again.
+> 4. **Production Target**: In production, we wouldn't use browser scraping at all—we would swap the `PlaywrightFetcher` with an official API key or OAuth 2.0 provider through our swappable `Fetcher` interface."
+
+---
+
+## 5. Three-Minute Live Demo Script
 
 ### Preparation
 Ensure dependencies are installed and test suite is green:

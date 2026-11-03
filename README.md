@@ -101,6 +101,10 @@ $env:PYTHONPATH="src"
 3. Once the LinkedIn feed loads, return to the terminal and press **[ENTER]**.
 4. The authenticated session is saved to `.auth/state.json` (gitignored).
 
+> [!NOTE]
+> **Why is login manual instead of automated with stored credentials?**  
+> Storing LinkedIn passwords in files violates security best practices (CWE-256) and immediately triggers LinkedIn's anti-bot defense (visual CAPTCHAs, Arkose challenges, and 2FA SMS prompts) which fail under automation. Performing a 30-second manual login once allows genuine 2FA completion and creates a reusable session cookie file (`.auth/state.json`) that powers 100% headless automated extractions thereafter. In production, browser scraping is replaced with official API OAuth tokens.
+
 ### 2. Running Extraction
 ```powershell
 $env:PYTHONPATH="src"
