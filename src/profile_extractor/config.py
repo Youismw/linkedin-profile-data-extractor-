@@ -49,11 +49,12 @@ class ExtractorConfig(BaseModel):
             "skills",
         ]
     )
-    delay_seconds_min: float = Field(default=5.0, ge=0.0)
-    delay_seconds_max: float = Field(default=12.0, ge=0.0)
+    delay_seconds_min: float = Field(default=1.0, ge=0.0)
+    delay_seconds_max: float = Field(default=2.0, ge=0.0)
     page_timeout_seconds: float = Field(default=30.0, gt=0.0)
     max_profiles: int | None = Field(default=None)
     headless: bool = Field(default=True)
+    deep_details: bool = Field(default=True)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")
 

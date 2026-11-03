@@ -16,8 +16,8 @@ important_fields = [
 ]
 
 # Polite pacing: random delay between profiles (in seconds)
-delay_seconds_min = 5.0
-delay_seconds_max = 12.0
+delay_seconds_min = 1.0
+delay_seconds_max = 2.0
 
 # Timeout per page in seconds
 page_timeout_seconds = 30.0

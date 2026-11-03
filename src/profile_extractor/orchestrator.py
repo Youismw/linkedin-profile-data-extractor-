@@ -15,9 +15,11 @@ This module coordinates the entire workflow:
 """
 
 import random
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from profile_extractor.config import ExtractorConfig
 from profile_extractor.fetcher import Fetcher
@@ -28,7 +30,12 @@ from profile_extractor.models import (
     Status,
     UnreachableRecord,
 )
-from profile_extractor.parser import parse_profile
+from profile_extractor.parser import (
+    parse_education_details,
+    parse_experience_details,
+    parse_profile,
+    parse_skills_details,
+)
 from profile_extractor.reader import read_profile_urls
 from profile_extractor.writer import (
     write_profile_json,
@@ -118,19 +125,15 @@ def run_pipeline(
 
     # --------------------------------------------------------------------------
     # 3. Prepare Clean Output Directory
-    # Purges leftover .json files from previous runs to guarantee fresh data
+    # Ensure output profiles directory exists without prematurely deleting prior data
     # --------------------------------------------------------------------------
     profiles_dir = config.output_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
-    for stale_json in profiles_dir.glob("*.json"):
-        try:
-            stale_json.unlink()
-        except OSError:
-            pass
 
     # --------------------------------------------------------------------------
     # 4. Processing Loop Across Valid Candidate Rows
     # --------------------------------------------------------------------------
+    interrupted = False
     try:
         for idx, row in enumerate(valid_rows):
             # If circuit breaker was triggered by a bot challenge, skip remaining rows
@@ -162,6 +165,118 @@ def run_pipeline(
                         status=Status.OK,
                         important_fields=config.important_fields,
                     )
+
+                    # Deep crawling of sub-pages (Show all skills, education, experience)
+                    if getattr(config, "deep_details", True) and fetch_res.html:
+                        # 1. Unroll Skills
+                        has_more_skills = bool(
+                            re.search(r"/details/skills/", fetch_res.html)
+                            or re.search(r"show all\s*(?:\d+)?\s*skills", fetch_res.html, re.I)
+                            or re.search(r"skills\s*\(\d+\)", fetch_res.html, re.I)
+                        )
+                        if has_more_skills:
+                            skills_url = f"https://www.linkedin.com/in/{slug}/details/skills/"
+                            logger.info(
+                                "Row %d: unrolling full skills list from %s",
+                                row.row_number,
+                                skills_url,
+                            )
+                            try:
+                                skills_res = fetcher.fetch(skills_url)
+                                if skills_res.status == Status.OK and skills_res.html:
+                                    deep_skills = parse_skills_details(skills_res.html)
+                                    if deep_skills and len(deep_skills) > len(
+                                        doc.profile.skills or []
+                                    ):
+                                        logger.info(
+                                            "Row %d: unrolled %d total skills (was %d)",
+                                            row.row_number,
+                                            len(deep_skills),
+                                            len(doc.profile.skills or []),
+                                        )
+                                        doc.profile.skills = deep_skills
+                            except Exception as skills_err:
+                                logger.warning(
+                                    "Row %d: could not fetch skills subpage: %s",
+                                    row.row_number,
+                                    skills_err,
+                                )
+
+                        # 2. Unroll Education
+                        has_more_edu = bool(
+                            re.search(r"/details/education/", fetch_res.html)
+                            or re.search(r"show all\s*(?:\d+)?\s*education", fetch_res.html, re.I)
+                        )
+                        if has_more_edu:
+                            edu_url = f"https://www.linkedin.com/in/{slug}/details/education/"
+                            logger.info(
+                                "Row %d: unrolling full education list from %s",
+                                row.row_number,
+                                edu_url,
+                            )
+                            try:
+                                edu_res = fetcher.fetch(edu_url)
+                                if edu_res.status == Status.OK and edu_res.html:
+                                    deep_edu = parse_education_details(edu_res.html)
+                                    if deep_edu and len(deep_edu) > len(
+                                        doc.profile.education or []
+                                    ):
+                                        logger.info(
+                                            "Row %d: unrolled %d total education entries (was %d)",
+                                            row.row_number,
+                                            len(deep_edu),
+                                            len(doc.profile.education or []),
+                                        )
+                                        doc.profile.education = deep_edu
+                            except Exception as edu_err:
+                                logger.warning(
+                                    "Row %d: could not fetch education subpage: %s",
+                                    row.row_number,
+                                    edu_err,
+                                )
+
+                        # 3. Unroll Experience
+                        has_more_exp = bool(
+                            re.search(r"/details/experience/", fetch_res.html)
+                            or re.search(r"show all\s*(?:\d+)?\s*experience", fetch_res.html, re.I)
+                        )
+                        if has_more_exp:
+                            exp_url = f"https://www.linkedin.com/in/{slug}/details/experience/"
+                            logger.info(
+                                "Row %d: unrolling full experience list from %s",
+                                row.row_number,
+                                exp_url,
+                            )
+                            try:
+                                exp_res = fetcher.fetch(exp_url)
+                                if exp_res.status == Status.OK and exp_res.html:
+                                    deep_exp = parse_experience_details(exp_res.html)
+                                    if deep_exp and len(deep_exp) > len(
+                                        doc.profile.experience or []
+                                    ):
+                                        logger.info(
+                                            "Row %d: unrolled %d total experience entries (was %d)",
+                                            row.row_number,
+                                            len(deep_exp),
+                                            len(doc.profile.experience or []),
+                                        )
+                                        doc.profile.experience = deep_exp
+                            except Exception as exp_err:
+                                logger.warning(
+                                    "Row %d: could not fetch experience subpage: %s",
+                                    row.row_number,
+                                    exp_err,
+                                )
+
+                        # Recalculate missing fields after unrolling details
+                        missing_fields = []
+                        profile_data = doc.profile.model_dump(exclude_none=True)
+                        for field in config.important_fields:
+                            val = profile_data.get(field)
+                            if val is None or (isinstance(val, list) and len(val) == 0):
+                                missing_fields.append(field)
+                        doc.meta.missing_fields = missing_fields
+
                     write_profile_json(doc, profiles_dir)
 
                     if doc.meta.status == Status.OK:
@@ -230,9 +345,7 @@ def run_pipeline(
                 )
                 reason = Reason.UNEXPECTED_ERROR
                 unreachable_count += 1
-                unreachable_by_reason[reason.value] = (
-                    unreachable_by_reason.get(reason.value, 0) + 1
-                )
+                unreachable_by_reason[reason.value] = unreachable_by_reason.get(reason.value, 0) + 1
                 unreachable_records.append(
                     UnreachableRecord(
                         input_row=row.row_number,
@@ -258,14 +371,41 @@ def run_pipeline(
                 logger.info("Applying polite delay of %.1fs before next profile...", delay)
                 sleep_fn(delay)
 
+    except KeyboardInterrupt:
+        interrupted = True
+        not_processed_count = num_valid - (ok_count + unreachable_count)
+        logger.warning(
+            "\n[!] Execution interrupted (Ctrl+C). Preserving extracted profiles & reports..."
+        )
     finally:
         # Guarantee browser shutdown and process cleanup
         fetcher.close()
 
     # --------------------------------------------------------------------------
-    # 5. Generate Audit Reports and Mathematical Summary
+    # 5. Stale Profile Reconciliation & Audit Reports
     # --------------------------------------------------------------------------
-    write_unreachable_report(unreachable_records, config.output_dir)
+    # Only remove files not in current spreadsheet AFTER an uninterrupted run completes
+    if not interrupted and not stop_triggered and (ok_count + unreachable_count >= num_valid):
+        valid_slugs = {row.slug for row in valid_rows if row.slug}
+        for existing_json in profiles_dir.glob("*.json"):
+            if existing_json.stem not in valid_slugs:
+                try:
+                    existing_json.unlink()
+                except OSError:
+                    pass
+
+    if unreachable_records:
+        write_unreachable_report(unreachable_records, config.output_dir)
+    else:
+        # Delete stale unreachable report from previous runs so successful runs show clean state
+        stale_report = Path(config.output_dir) / "unreachable_profiles.xlsx"
+        try:
+            stale_report.unlink(missing_ok=True)
+        except PermissionError:
+            logger.warning(
+                "Stale %s is open in another program and could not be removed.",
+                stale_report.name,
+            )
 
     end_time = datetime.now(UTC)
     finished_at_str = end_time.isoformat().replace("+00:00", "Z")

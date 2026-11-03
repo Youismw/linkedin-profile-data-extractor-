@@ -163,3 +163,119 @@ class TestParser:
         assert doc.profile.name is None
         assert doc.to_serializable_dict()["profile"] == {}
 
+    def test_title_fallback_rejects_generic_titles(self) -> None:
+        """Verify generic titles like 'Sign Up | LinkedIn' or 'Log In' are rejected."""
+        signup_html = (
+            "<html><head><title>Sign Up | LinkedIn</title></head>"
+            "<body><div>Form</div></body></html>"
+        )
+        doc = parse_profile(
+            source_url="https://www.linkedin.com/in/blocked-user/",
+            slug="blocked-user",
+            html=signup_html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+        assert doc.meta.status == Status.UNREACHABLE
+        assert doc.meta.reason == Reason.PARSE_FAILED
+        assert doc.profile.name != "Sign Up"
+
+    def test_headline_and_location_word_boundaries(self) -> None:
+        """Verify substrings like 'connect' or 'uk' do not corrupt headline or location."""
+        html = """
+        <html>
+        <head><title>John Mukherjee | LinkedIn</title></head>
+        <body>
+            <main>
+                <section>
+                    <h1>John Mukherjee</h1>
+                    <div>Network Connectivity Engineer</div>
+                    <div>San Francisco, California, United States</div>
+                    <div>500+ connections</div>
+                </section>
+            </main>
+        </body>
+        </html>
+        """
+        doc = parse_profile(
+            source_url="https://www.linkedin.com/in/john-mukherjee/",
+            slug="john-mukherjee",
+            html=html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+        assert doc.meta.status == Status.OK
+        assert doc.profile.name == "John Mukherjee"
+        assert doc.profile.headline == "Network Connectivity Engineer"
+        assert doc.profile.location == "San Francisco, California, United States"
+
+    def test_aside_strip_prevents_sidebar_leakage(self) -> None:
+        """Verify <aside> tags and 'People also viewed' sections do not pollute raw_text."""
+        html = """
+        <html>
+        <body>
+            <main>
+                <section>
+                    <h1>Target Candidate</h1>
+                    <div>Senior Python Engineer</div>
+                </section>
+                <aside>
+                    <h2>People also viewed</h2>
+                    <div>Unrelated Person - Chief Clown</div>
+                </aside>
+            </main>
+        </body>
+        </html>
+        """
+        doc = parse_profile(
+            source_url="https://www.linkedin.com/in/target-candidate/",
+            slug="target-candidate",
+            html=html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+        assert doc.meta.status == Status.OK
+        assert doc.profile.name == "Target Candidate"
+        assert "Unrelated Person" not in (doc.raw_text or "")
+        assert "Chief Clown" not in (doc.raw_text or "")
+
+    def test_consecutive_duplicate_lines_deduped(self) -> None:
+        """Verify LinkedIn's duplicated visually-hidden spans don't shift experience fields."""
+        html = """
+        <html>
+        <body>
+            <main>
+                <section>
+                    <h1>Jane Doe</h1>
+                    <div>Software Engineer</div>
+                </section>
+                <section id="experience">
+                    <h2>Experience</h2>
+                    <ul>
+                        <li>
+                            <div>Staff Engineer</div>
+                            <div>Staff Engineer</div>
+                            <div>Acme Corp</div>
+                            <div>Acme Corp</div>
+                            <div>Jan 2020 - Present · 4 yrs</div>
+                            <div>Jan 2020 - Present · 4 yrs</div>
+                        </li>
+                    </ul>
+                </section>
+            </main>
+        </body>
+        </html>
+        """
+        doc = parse_profile(
+            source_url="https://www.linkedin.com/in/jane-doe/",
+            slug="jane-doe",
+            html=html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+        assert doc.meta.status == Status.OK
+        assert doc.profile.experience is not None
+        exp = doc.profile.experience[0]
+        assert exp.title == "Staff Engineer"
+        assert exp.company == "Acme Corp"
+        assert "Jan 2020" in (exp.dates or "")

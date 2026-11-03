@@ -79,3 +79,15 @@ class TestDetection:
         assert status2 == Status.UNREACHABLE
         assert reason2 == Reason.BLOCKED
         assert "Security Verification" in (detail2 or "")
+
+    def test_detect_status_codes_429_and_999(self) -> None:
+        """Verify 429 and 999 status codes are identified as Reason.BLOCKED."""
+        for code in (429, 999):
+            status, reason, detail = detect_outcome(
+                "https://www.linkedin.com/in/blocked-user/",
+                "<html><body></body></html>",
+                status_code=code,
+            )
+            assert status == Status.UNREACHABLE
+            assert reason == Reason.BLOCKED
+            assert str(code) in (detail or "")

@@ -52,6 +52,8 @@ def normalize_profile_url(raw_url: str) -> str | None:
         return None
 
     cleaned = raw_url.strip()
+    # Strip common copy-paste wrappers (quotes, angle brackets, markdown wrappers, punctuation)
+    cleaned = cleaned.strip(" \t\r\n<>\"'`").rstrip(",;.").strip()
     if not cleaned:
         return None
 
@@ -76,7 +78,12 @@ def normalize_profile_url(raw_url: str) -> str | None:
 
     # Split path segments into clean list: e.g. ['', 'in', 'slug'] -> ['in', 'slug']
     segments = [seg for seg in path.split("/") if seg]
-    if len(segments) != 2 or segments[0].lower() != "in":
+    if len(segments) < 2 or segments[0].lower() != "in":
+        return None
+
+    # For sub-page URLs (e.g. /in/slug/details/experience/), only allow
+    # standard LinkedIn sub-sections
+    if len(segments) > 2 and segments[2].lower() not in ("details", "overlay", "recent-activity"):
         return None
 
     # Decode percent-encoded Unicode characters in the slug

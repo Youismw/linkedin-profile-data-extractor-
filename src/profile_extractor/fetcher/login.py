@@ -63,7 +63,15 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
         page.goto(LINKEDIN_LOGIN_URL)
 
         # Pause and wait for human confirmation after 2FA sign-in
-        input("\n>>> Press [ENTER] in this terminal AFTER you have successfully logged in: ")
+        user_input = input("\n>>> Press [ENTER] after logging in (or 'q' to cancel): ").strip()
+        cancel_words = ("q", "quit", "exit", "logout")
+        if user_input.lower() in cancel_words or user_input.startswith((".\\run", "run", "python")):
+            try:
+                browser.close()
+            except Exception:
+                pass
+            print("\n[!] Login cancelled by user.")
+            raise RuntimeError("Login cancelled by user.")
 
         # Capture complete session cookies and localStorage
         try:
@@ -78,6 +86,13 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
                 browser.close()
             except Exception:
                 pass
+
+    # Verify that an actual authenticated session cookie ('li_at') was captured
+    if is_session_expired(target_path):
+        target_path.unlink(missing_ok=True)
+        print("\n[!] Warning: No authenticated LinkedIn session ('li_at' cookie) was detected.")
+        print("    You must finish signing in before pressing Enter.")
+        raise RuntimeError("No authenticated session captured.")
 
     # Apply restrictive file permissions where supported (POSIX 0o600)
     try:

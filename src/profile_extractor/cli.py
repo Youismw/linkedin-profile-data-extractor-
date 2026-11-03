@@ -51,6 +51,51 @@ def _save_run_state(state: dict[str, str]) -> None:
         pass
 
 
+def _clean_output_path(path_str: str) -> str:
+    """Strip redundant prefixes like 'output\\', 'output/', 'output:' if present."""
+    raw = path_str.strip()
+    raw_lower = raw.lower()
+    for prefix in ("output\\", "output/", "output:", "out\\", "out/"):
+        if raw_lower.startswith(prefix):
+            return raw[len(prefix) :].strip()
+    return raw
+
+
+def _detect_output_intent(
+    input_pos: str | None, output_pos: str | None
+) -> tuple[str | None, str | None]:
+    """Detect if user passed an output path (e.g. 'output\\...', '\\output', or 'output <path>')."""
+    # 1. If input_pos is literally "output" or "out" (e.g. .\run output "C:\Users\...\nnn")
+    if input_pos and input_pos.strip().lower() in ("output", "out"):
+        cleaned_out = _clean_output_path(output_pos) if output_pos else None
+        return None, cleaned_out
+
+    # 2. Clean output_pos if it was explicitly provided with an 'output\' prefix
+    if output_pos:
+        output_pos = _clean_output_path(output_pos)
+
+    # 3. If only one positional argument was provided, inspect if it signifies an output location
+    if input_pos and not output_pos:
+        raw = input_pos.strip()
+        raw_lower = raw.lower()
+
+        # Check for prefix: "output\", "output/", "output:", "out\", "out/"
+        for prefix in ("output\\", "output/", "output:", "out\\", "out/"):
+            if raw_lower.startswith(prefix):
+                return None, raw[len(prefix) :].strip()
+
+        # Check for suffix: "\output", "/output" (ignoring files like output.xlsx)
+        if not raw_lower.endswith(".xlsx"):
+            cleaned_slash = raw.rstrip("\\/")
+            if (
+                cleaned_slash.lower().endswith(("\\output", "/output"))
+                or cleaned_slash.lower() == "output"
+            ):
+                return None, raw
+
+    return input_pos, output_pos
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct and return the argument parser for profile_extractor."""
     parser = argparse.ArgumentParser(
@@ -109,6 +154,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fast mode: minimal polite delays (0.5s - 1.0s) for quick testing/demos",
     )
+    run_parser.add_argument(
+        "--visible",
+        "--headed",
+        dest="visible",
+        action="store_true",
+        help="Launch visible Chromium browser window during extraction",
+    )
+    run_parser.add_argument(
+        "--deep",
+        dest="deep_details",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Automatically follow 'Show all' sub-pages for skills, education, "
+            "and experience (default: True)"
+        ),
+    )
 
     # --------------------------------------------------------------------------
     # 'login' subcommand (stand-alone session creator)
@@ -123,6 +185,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target path to save authenticated session state JSON",
     )
 
+    # --------------------------------------------------------------------------
+    # 'logout' subcommand (manually clean / reset saved session and remembered paths)
+    # --------------------------------------------------------------------------
+    logout_parser = subparsers.add_parser(
+        "logout",
+        aliases=["clean-session", "reset-session", "reset"],
+        help="Clear saved LinkedIn session, input location, and output location",
+    )
+    logout_parser.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        help="Target to reset: 'all' (default: resets all 3), 'session', or 'paths'",
+    )
+    logout_parser.add_argument(
+        "--auth-path",
+        default=None,
+        help="Path to session state file (defaults to .auth/state.json)",
+    )
+    logout_parser.add_argument(
+        "--all",
+        dest="all_flag",
+        action="store_true",
+        default=False,
+        help="Clear session AND remembered input/output paths (default behavior)",
+    )
+    logout_parser.add_argument(
+        "--session-only",
+        action="store_true",
+        default=False,
+        help="Clear only the LinkedIn session cookie, preserving remembered paths",
+    )
+
     return parser
 
 
@@ -132,7 +227,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     # Default to 'run' subcommand if user typed flags/arguments without a subcommand
-    if not argv or (argv[0] not in ["run", "login", "-h", "--help"]):
+    known_commands = [
+        "run",
+        "login",
+        "logout",
+        "clean-session",
+        "reset-session",
+        "reset",
+        "-h",
+        "--help",
+    ]
+    if not argv or (argv[0] not in known_commands):
         argv = ["run", *argv]
 
     parser = build_parser()
@@ -143,12 +248,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     # --------------------------------------------------------------------------
+    # Handler: logout / clean-session / reset-session / reset
+    # --------------------------------------------------------------------------
+    if args.command in ("logout", "clean-session", "reset-session", "reset"):
+        target_auth = Path(args.auth_path or ".auth/state.json")
+        target = (getattr(args, "target", None) or "all").lower()
+        clear_session = target in ("all", "session") and not getattr(args, "paths_only", False)
+        clear_paths = (
+            getattr(args, "all_flag", False)
+            or getattr(args, "all", False)
+            or target in ("all", "paths")
+            or not getattr(args, "session_only", False)
+        )
+
+        if clear_session:
+            if target_auth.is_file():
+                target_auth.unlink()
+                print(f"[OK] LinkedIn session removed: {target_auth}")
+            else:
+                print(f"No active session found at: {target_auth}")
+
+        if clear_paths:
+            if STATE_FILE.is_file():
+                STATE_FILE.unlink()
+                print(f"[OK] Remembered path history removed: {STATE_FILE}")
+                print("     (both input and output locations reset)")
+            else:
+                print(f"No remembered path history found at: {STATE_FILE}")
+
+        print("Logout complete. All 3 (session, input location, and output location) are reset.")
+        print("Future runs will prompt for login and require specifying an input spreadsheet.")
+        return 0
+
+    # --------------------------------------------------------------------------
     # Handler: login
     # --------------------------------------------------------------------------
     if args.command == "login":
-        auth_path = args.auth_path or ".auth/state.json"
+        login_auth = Path(args.auth_path or ".auth/state.json")
         try:
-            run_interactive_login(auth_path)
+            run_interactive_login(login_auth)
             return 0
         except Exception as e:
             print(f"Login failed: {e}", file=sys.stderr)
@@ -159,69 +297,107 @@ def main(argv: Sequence[str] | None = None) -> int:
     # --------------------------------------------------------------------------
     if args.command == "run":
         overrides: dict[str, object] = {}
-        input_choice = args.input_file or args.input_pos
-        output_choice = args.output_dir or args.output_pos
+        input_pos, output_pos = _detect_output_intent(args.input_pos, args.output_pos)
+        input_choice = args.input_file or input_pos
+        output_choice = args.output_dir or output_pos
 
         run_state = _load_run_state()
 
-        # 1. Resolve Input Spreadsheet Path
+        # 1. Resolve Input Spreadsheet Path (Strict: NEVER guess or silently fallback)
+        input_path: Path | None = None
         if input_choice:
-            input_path = Path(input_choice)
-            if input_path.is_dir():
-                # Sort by newest modification time to avoid selecting stale files
-                xlsx_files = sorted(
-                    input_path.glob("*.xlsx"),
+            candidate = Path(input_choice)
+            if candidate.is_dir():
+                cand_files = sorted(
+                    [
+                        p
+                        for p in candidate.glob("*")
+                        if p.suffix.lower() in (".xlsx", ".xlsm", ".csv")
+                        and not p.name.startswith("~$")
+                    ],
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
-                if xlsx_files:
-                    input_path = xlsx_files[0]
-            elif not input_path.is_file():
-                # Convenient fallback: check user Desktop
-                desktop_fallback = Path.home() / "Desktop" / input_path.name
+                if cand_files:
+                    input_path = cand_files[0]
+                else:
+                    print(
+                        f"\n[ERROR] No candidate files (.xlsx, .csv) found in: {candidate}\n",
+                        file=sys.stderr,
+                    )
+                    return 1
+            elif candidate.is_file():
+                input_path = candidate
+            else:
+                desktop_fallback = Path.home() / "Desktop" / candidate.name
                 if desktop_fallback.is_file():
                     input_path = desktop_fallback
-            overrides["input_file"] = input_path
-            run_state["last_input"] = str(input_path.resolve())
-        else:
-            # Check previously remembered input, or Desktop / input directory defaults
-            last_input = (
-                Path(run_state["last_input"]) if run_state.get("last_input") else None
-            )
-            desktop_profile = Path.home() / "Desktop" / "profiles.xlsx"
-            default_input = Path("input/profiles.xlsx")
-
-            if desktop_profile.is_file() and (
-                not last_input
-                or not last_input.is_file()
-                or desktop_profile.stat().st_mtime > last_input.stat().st_mtime
-            ):
-                overrides["input_file"] = desktop_profile
-                run_state["last_input"] = str(desktop_profile.resolve())
-            elif last_input and last_input.is_file():
-                overrides["input_file"] = last_input
-            elif default_input.is_file():
-                overrides["input_file"] = default_input
-                run_state["last_input"] = str(default_input.resolve())
-            else:
-                input_dir = Path("input")
-                if input_dir.is_dir():
-                    xlsx_files = sorted(
-                        input_dir.glob("*.xlsx"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
+                else:
+                    print(
+                        f"\n[ERROR] Specified input file does not exist: {candidate}\n",
+                        file=sys.stderr,
                     )
-                    if xlsx_files:
-                        overrides["input_file"] = xlsx_files[0]
-                        run_state["last_input"] = str(xlsx_files[0].resolve())
+                    return 1
+            run_state["last_input"] = str(input_path.resolve())
+        elif run_state.get("last_input"):
+            remembered = Path(run_state["last_input"])
+            if remembered.is_file():
+                input_path = remembered
+            else:
+                run_state.pop("last_input", None)
+                _save_run_state(run_state)
+
+        # Fail honestly if no input file was provided or remembered
+        if not input_path:
+            print("\n" + "=" * 70, file=sys.stderr)
+            print("[ERROR] No input spreadsheet provided.", file=sys.stderr)
+            print(
+                "You must specify an Excel (.xlsx/.xlsm) or CSV file with candidate URLs.",
+                file=sys.stderr,
+            )
+            print("\nUsage example:", file=sys.stderr)
+            print(r'  .\run "C:\path\to\profiles.xlsx"', file=sys.stderr)
+            print(r'  .\run "C:\path\to\profiles.xlsx" "C:\path\to\output_dir"', file=sys.stderr)
+            print("=" * 70 + "\n", file=sys.stderr)
+            return 1
+
+        overrides["input_file"] = input_path
 
         # 2. Resolve Output Directory Path
+        out_dir_path: Path
         if output_choice:
-            out_path = Path(output_choice)
-            overrides["output_dir"] = out_path
-            run_state["last_output"] = str(out_path.resolve())
+            candidate_out = Path(output_choice)
+            if candidate_out.is_file():
+                print(
+                    f"\n[ERROR] Output directory is a file, not a directory: {candidate_out}\n",
+                    file=sys.stderr,
+                )
+                return 1
+            out_dir_path = candidate_out
+            run_state["last_output"] = str(out_dir_path.resolve())
         elif run_state.get("last_output"):
-            overrides["output_dir"] = Path(run_state["last_output"])
+            rem_out = Path(run_state["last_output"])
+            if rem_out.is_file():
+                run_state.pop("last_output", None)
+                out_dir_path = Path("output")
+            else:
+                out_dir_path = rem_out
+        else:
+            # Default to standard project output/ directory
+            out_dir_path = Path("output")
+
+        # Validate output directory can be created
+        try:
+            out_dir_path.mkdir(parents=True, exist_ok=True)
+            overrides["output_dir"] = out_dir_path
+        except Exception as out_err:
+            print(
+                f"\n[ERROR] Cannot write to output directory '{out_dir_path}': {out_err}\n",
+                file=sys.stderr,
+            )
+            run_state.pop("last_output", None)
+            _save_run_state(run_state)
+            return 1
 
         # Persist resolved paths for future runs
         _save_run_state(run_state)
@@ -232,9 +408,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.fast:
             overrides["delay_seconds_min"] = 0.5
             overrides["delay_seconds_max"] = 1.0
+        if getattr(args, "visible", False):
+            overrides["headless"] = False
+        if getattr(args, "deep_details", None) is not None:
+            overrides["deep_details"] = args.deep_details
 
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)
+        print(f"Reading candidate spreadsheet: {config.input_file}")
+        print(f"Output directory: {config.output_dir}")
 
         # 4. Instantiate Fetcher with Session Health Check
         fetcher: Fetcher
@@ -243,17 +425,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             # Proactive session check: opens login window if cookies expired
             if is_session_expired(config.auth_state_path):
-                if sys.stdin and sys.stdin.isatty():
-                    print("\n" + "=" * 70)
-                    print("[!] LinkedIn session not found or has expired.")
-                    print("    Opening LinkedIn login window now. Please sign in...")
-                    print("=" * 70 + "\n")
+                print("\n" + "=" * 70)
+                print("[!] LinkedIn session not found or has expired.")
+                print("    Opening LinkedIn login window now. Please sign in...")
+                print("=" * 70 + "\n")
+                try:
                     run_interactive_login(config.auth_state_path)
-                else:
-                    print(
-                        f"Error: Session missing/expired at '{config.auth_state_path}'.",
-                        file=sys.stderr,
-                    )
+                except Exception as e:
+                    print(f"Error during interactive login: {e}", file=sys.stderr)
                     return 1
 
             fetcher = PlaywrightFetcher(
@@ -276,9 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 profiles_dir = config.output_dir / "profiles"
                 abs_output = (
-                    profiles_dir.resolve()
-                    if profiles_dir.is_dir()
-                    else config.output_dir.resolve()
+                    profiles_dir.resolve() if profiles_dir.is_dir() else config.output_dir.resolve()
                 )
                 abs_output.mkdir(parents=True, exist_ok=True)
                 print(f"Opening output folder: {abs_output}")

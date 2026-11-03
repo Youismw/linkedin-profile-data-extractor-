@@ -22,10 +22,19 @@ class TestURLNormalization:
             ("www.linkedin.com/in/jane-doe", "https://www.linkedin.com/in/jane-doe/"),
             ("https://uk.linkedin.com/in/jane-doe/", "https://www.linkedin.com/in/jane-doe/"),
             ("https://in.linkedin.com/in/jane-doe/", "https://www.linkedin.com/in/jane-doe/"),
-            ("https://www.linkedin.com/in/jane-doe?trk=prof", "https://www.linkedin.com/in/jane-doe/"),
-            ("https://www.linkedin.com/in/jane-doe#details", "https://www.linkedin.com/in/jane-doe/"),
+            (
+                "https://www.linkedin.com/in/jane-doe?trk=prof",
+                "https://www.linkedin.com/in/jane-doe/",
+            ),
+            (
+                "https://www.linkedin.com/in/jane-doe#details",
+                "https://www.linkedin.com/in/jane-doe/",
+            ),
             ("https://www.linkedin.com/in/jane%20doe/", "https://www.linkedin.com/in/jane doe/"),
-            ("https://www.linkedin.com/in/alex.smith_99/", "https://www.linkedin.com/in/alex.smith_99/"),
+            (
+                "https://www.linkedin.com/in/alex.smith_99/",
+                "https://www.linkedin.com/in/alex.smith_99/",
+            ),
         ]
 
         for raw, expected in valid_cases:
@@ -181,3 +190,46 @@ class TestExcelReader:
         assert res.rows_valid == 1000
         assert res.duplicates_skipped == 0
         assert elapsed < 2.0, f"Reading 1000 rows took {elapsed:.2f}s, expected < 2.0s"
+
+    def test_subpage_profile_urls(self) -> None:
+        """Verify LinkedIn sub-pages (e.g. details/experience) normalize to candidate root."""
+        subpage_url = "https://www.linkedin.com/in/satya-nadella/details/experience/"
+        normalized = normalize_profile_url(subpage_url)
+        assert normalized == "https://www.linkedin.com/in/satya-nadella/"
+        assert extract_slug(normalized) == "satya-nadella"
+
+        overlay_url = "https://www.linkedin.com/in/john-smith/overlay/contact-info/"
+        normalized_overlay = normalize_profile_url(overlay_url)
+        assert normalized_overlay == "https://www.linkedin.com/in/john-smith/"
+
+    def test_hyperlink_formula_reading(self, tmp_path: Path) -> None:
+        """Verify Excel =HYPERLINK('url', 'text') formulas are resolved to the URL."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Profile"])
+        ws.append(['=HYPERLINK("https://www.linkedin.com/in/formula-candidate/", "View Profile")'])
+
+        file_path = tmp_path / "formula_test.xlsx"
+        wb.save(file_path)
+
+        res = read_profile_urls(file_path)
+        assert res.rows_valid == 1
+        assert res.rows[0].slug == "formula-candidate"
+        assert res.rows[0].normalized == "https://www.linkedin.com/in/formula-candidate/"
+
+    def test_case_insensitive_deduplication(self, tmp_path: Path) -> None:
+        """Verify duplicate URLs with differing slug casing are deduplicated cleanly."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Profile"])
+        ws.append(["https://www.linkedin.com/in/satya-nadella/"])
+        ws.append(["https://www.linkedin.com/in/SATYA-NADELLA/"])
+
+        file_path = tmp_path / "casing_dedupe.xlsx"
+        wb.save(file_path)
+
+        res = read_profile_urls(file_path)
+        assert res.rows_valid == 1
+        assert res.duplicates_skipped == 1

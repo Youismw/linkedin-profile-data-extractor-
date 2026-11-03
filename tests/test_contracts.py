@@ -60,9 +60,7 @@ class TestModels:
             ],
             skills=None,  # Missing field
         )
-        other_sections = [
-            OtherSection(heading="Certifications", text="AWS Solutions Architect")
-        ]
+        other_sections = [OtherSection(heading="Certifications", text="AWS Solutions Architect")]
 
         doc = ProfileDocument(meta=meta, profile=profile, other_sections=other_sections)
         serialized = doc.to_serializable_dict()
@@ -143,8 +141,8 @@ class TestConfig:
         assert cfg.input_file == Path("input/profiles.xlsx")
         assert cfg.output_dir == Path("output")
         assert cfg.auth_state_path == Path(".auth/state.json")
-        assert cfg.delay_seconds_min == 5.0
-        assert cfg.delay_seconds_max == 12.0
+        assert cfg.delay_seconds_min == 1.0
+        assert cfg.delay_seconds_max == 2.0
         assert cfg.page_timeout_seconds == 30.0
         assert cfg.max_profiles is None
         assert cfg.headless is True

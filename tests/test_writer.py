@@ -1,6 +1,7 @@
 """Tests for Phase 3: Atomic writers, Unicode support, reports, and summaries."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -161,3 +162,35 @@ class TestWriter:
         assert parsed["ok_count"] == 3
         assert parsed["unreachable_count"] == 2
         assert parsed["rows_read"] == 5
+
+    def test_unreachable_report_locked_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify unreachable report falls back to timestamped file if target is locked by Excel."""
+        records = [
+            UnreachableRecord(
+                input_row=2,
+                url_as_given="https://www.linkedin.com/in/locked-user/",
+                slug="locked-user",
+                reason=Reason.NOT_FOUND,
+                detail="404",
+            )
+        ]
+
+        target_file = tmp_path / "unreachable_profiles.xlsx"
+        target_file.write_text("simulated lock")
+
+        orig_replace = os.replace
+
+        def mock_replace(src: Path | str, dst: Path | str) -> None:
+            if str(dst) == str(target_file):
+                raise PermissionError("Simulated Excel file lock")
+            orig_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", mock_replace)
+
+        report_path = write_unreachable_report(records, tmp_path)
+        assert report_path is not None
+        assert report_path.exists()
+        assert "unreachable_profiles_" in report_path.name
+        assert report_path.suffix == ".xlsx"

@@ -13,12 +13,16 @@ import json
 import os
 import tempfile
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import openpyxl
 
+from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import ProfileDocument, RunSummary, UnreachableRecord
 from profile_extractor.urls import sanitize_slug
+
+logger = get_logger()
 
 
 def _set_restrictive_permissions(file_path: Path) -> None:
@@ -62,7 +66,17 @@ def _atomic_write_text(target_path: Path, content: str) -> None:
     tmp_path = Path(tmp_name)
     try:
         _set_restrictive_permissions(tmp_path)
-        os.replace(tmp_path, target_path)
+        try:
+            os.replace(tmp_path, target_path)
+        except PermissionError:
+            timestamp = int(datetime.now(UTC).timestamp())
+            fallback_path = parent / f"{target_path.stem}_{timestamp}{target_path.suffix}"
+            logger.warning(
+                "Could not overwrite %s (file locked by another process). Writing to %s instead.",
+                target_path.name,
+                fallback_path.name,
+            )
+            os.replace(tmp_path, fallback_path)
     except Exception:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
@@ -134,16 +148,27 @@ def write_unreachable_report(
 
     # Save via temporary file for atomic write safety
     temp_target = out_dir / f".{target_path.stem}_{os.getpid()}.tmp"
+    final_path = target_path
     try:
         wb.save(temp_target)
         _set_restrictive_permissions(temp_target)
-        os.replace(temp_target, target_path)
+        try:
+            os.replace(temp_target, target_path)
+        except PermissionError:
+            timestamp = int(datetime.now(UTC).timestamp())
+            final_path = out_dir / f"unreachable_profiles_{timestamp}.xlsx"
+            logger.warning(
+                "Could not overwrite %s (file locked by Excel). Writing report to %s instead.",
+                target_path.name,
+                final_path.name,
+            )
+            os.replace(temp_target, final_path)
     finally:
         wb.close()
         if temp_target.exists():
             temp_target.unlink(missing_ok=True)
 
-    return target_path
+    return final_path
 
 
 def write_run_summary(summary: RunSummary, output_dir: Path | str) -> Path:

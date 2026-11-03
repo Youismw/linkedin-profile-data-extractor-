@@ -20,6 +20,45 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 
 ---
 
+## 🛠️ Technology Stack & Versions
+
+| Category | Tool / Library | Version | Core Purpose & Architecture Role |
+|---|---|---|---|
+| **Core Runtime** | **Python** | `>=3.11` (Tested on 3.12 / 3.14) | Core language runtime with modern union syntax (`X \| None`), pattern matching, and dataclasses. |
+| **Browser Automation** | **Playwright** | `1.57.0` | Chromium automation engine for rendering LinkedIn client-side SPAs and capturing authentic 2FA sessions. |
+| **Data Contracts** | **Pydantic** | `2.12.5` | Strict schema validation, missing field detection, and immutable serializable data transfer objects. |
+| **HTML Parsing** | **BeautifulSoup4** | `4.15.0` | Semantic DOM traversal, noise tag stripping, and heuristic attribute inspection. |
+| **HTML Parsing Engine** | **lxml** | `6.1.3` | High-performance C-accelerated tree builder for BeautifulSoup. |
+| **Spreadsheet I/O** | **openpyxl** | `3.1.5` | Ingests candidate `.xlsx` workbooks, resolves formulas (`=HYPERLINK`), and generates audit sheets. |
+| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, and integration test suite (53 passing tests). |
+| **Code Quality / Linter** | **Ruff** | `0.15.0` | High-speed Rust-based code formatter and linter enforcing PEP 8 compliance. |
+| **Static Type Checking** | **Pyright & Mypy** | `1.1.408` / `2.4.1` | Static typing enforcement across all 26 source files (0 errors). |
+
+---
+
+## ⚡ Execution Commands Reference (What Each Does)
+
+| Command | Shorthand | What It Does & When to Use |
+|---|---|---|
+| `.\run.bat` | `.\run` | **Primary 1-Click Runner**: Checks LinkedIn session health. If missing/expired, opens a visible browser for 2FA login. Automatically picks up input from `input/*.xlsx`, processes profiles with polite human delays (5–12s), saves JSON files to `output/`, and **automatically opens the output folder in Windows Explorer**. |
+| `.\run.bat "<input>" "<output>"` | `.\run "in.xlsx" "out"` | **Custom Paths Runner**: Runs on an input file anywhere on the machine and writes to any output folder. **Persists these paths** in `.run_state.json` so future bare `.\run` runs remember them without retyping. |
+| `.\run.bat "output\<out_dir>"` | `.\run "output\C:\path"` / `.\run "C:\path\output"` | **Output-Only Override**: Changes the output folder without re-specifying the input file. Recognizes `output\` prefix or `\output` suffix, keeping the default/remembered spreadsheet. |
+| `.\run.bat --fake` | `.\run --fake` | **Offline / Demo Mode**: Executes the entire pipeline against simulated synthetic profile fixtures with zero network calls. Perfect for safe presentations and testing. |
+| `.\run.bat --fast` | `.\run --fast` | **High-Speed Mode**: Reduces polite delays between profiles to 0.5s–1.0s (instead of 5s–12s) for rapid testing or swift demos. |
+| `.\run.bat --max-profiles 3` | `.\run --max-profiles 3` | **Profile Cap**: Stops processing after processing the specified number of valid profiles. |
+| `.\run.bat login` | `python -m profile_extractor login` | **Stand-alone Login Helper**: Explicitly opens a visible Chromium browser to `https://www.linkedin.com/login` and exports active cookies to `.auth/state.json`. |
+| `.\run.bat logout` | `.\run logout` / `.\run clean-session` | **Clean Session**: Manually clears saved `.auth/state.json` so future runs prompt for login (pass `--all` to also reset remembered paths). |
+| `.\run.bat --help` | `.\run -h` | **Help & Manual**: Prints all available arguments, options, and flags. |
+| `.\extract.bat` | — | **Legacy Runner**: Retained for backward-compatibility; delegates directly to the extraction engine. |
+| `pytest -m "not live"` | — | **Automated Test Suite**: Executes all 53 automated unit and integration tests in ~1.3 seconds. |
+| `ruff check src tests` | — | **Lint Check**: Validates PEP 8 style, import ordering, and code cleanliness (0 errors). |
+| `pyright src tests` | — | **Type Engine Verification**: Verifies static typing across the entire codebase (0 errors). |
+| `mypy src tests` | — | **Strict Static Typing**: Runs Mypy static analysis across all source files (0 errors). |
+
+---
+
+---
+
 ## Architecture: Current PoC vs. Production Target
 
 ```

@@ -57,7 +57,7 @@ BLOCKED_CONTENT_PATTERNS = [
     re.compile(r"unusual traffic from your computer network", re.IGNORECASE),
     re.compile(r"account.*temporarily restricted", re.IGNORECASE),
     re.compile(r"Please solve this puzzle", re.IGNORECASE),
-    re.compile(r"captcha", re.IGNORECASE),
+    re.compile(r"\bcaptcha\b", re.IGNORECASE),
 ]
 
 
@@ -69,20 +69,39 @@ def detect_outcome(
     """Inspect current URL, HTTP status code, and HTML body to detect page state.
 
     Evaluation Order:
-    1. Check for Security Challenges / Restrictions -> BLOCKED.
-       (Prioritized first so the pipeline halts immediately if challenged).
-    2. Check for HTTP 404 or missing profile text -> NOT_FOUND.
+    1. Check for HTTP status codes:
+       - 429 / 999 -> BLOCKED
+       - 404 -> NOT_FOUND
+    2. Check for Security Challenges / Restrictions -> BLOCKED.
     3. Check for login / authwall redirection -> NOT_VISIBLE.
-    4. Otherwise -> Status.OK.
+    4. Check for Profile Not Found text -> NOT_FOUND.
+    5. Otherwise -> Status.OK.
 
     Returns:
         tuple of (Status, Reason, diagnostic_detail_string).
     """
-    # 1. Check for Security Challenges / Bot Blocks
+    # 1. Check HTTP Status Codes (rate limiting, blocked, 404)
+    if status_code in (429, 999):
+        return (
+            Status.UNREACHABLE,
+            Reason.BLOCKED,
+            f"Rate limited or request denied by LinkedIn (HTTP {status_code})",
+        )
+
+    if status_code == 404:
+        return Status.UNREACHABLE, Reason.NOT_FOUND, "HTTP status 404 Not Found"
+
+    # 2. Check for Security Challenges / Bot Blocks (URL redirects first)
     for pattern in BLOCKED_URL_PATTERNS:
         if pattern.search(current_url):
             return Status.UNREACHABLE, Reason.BLOCKED, f"Blocked URL detected: {current_url}"
 
+    # 3. Check for Login Wall / Authwall (URL redirects first)
+    for pattern in LOGIN_WALL_URL_PATTERNS:
+        if pattern.search(current_url):
+            return Status.UNREACHABLE, Reason.NOT_VISIBLE, f"Redirected to authwall: {current_url}"
+
+    # 4. Check for Security Challenge / Blocked content
     for pattern in BLOCKED_CONTENT_PATTERNS:
         if pattern.search(html):
             match_str = pattern.pattern
@@ -92,22 +111,15 @@ def detect_outcome(
                 f"Security challenge or restriction detected: {match_str}",
             )
 
-    # 2. Check for Not Found (HTTP 404 or deleted profile message)
-    if status_code == 404:
-        return Status.UNREACHABLE, Reason.NOT_FOUND, "HTTP status 404 Not Found"
-
+    # 5. Check for Profile Not Found content
     for pattern in NOT_FOUND_CONTENT_PATTERNS:
         if pattern.search(html):
             return Status.UNREACHABLE, Reason.NOT_FOUND, "Profile not found page detected"
 
-    # 3. Check for Login Wall / Authwall (Redirected away from profile)
-    for pattern in LOGIN_WALL_URL_PATTERNS:
-        if pattern.search(current_url):
-            return Status.UNREACHABLE, Reason.NOT_VISIBLE, f"Redirected to authwall: {current_url}"
-
+    # 6. Check for Authwall content
     for pattern in LOGIN_WALL_CONTENT_PATTERNS:
         if pattern.search(html):
             return Status.UNREACHABLE, Reason.NOT_VISIBLE, "Login wall content detected"
 
-    # 4. Standard Visible Page
+    # 6. Standard Visible Page
     return Status.OK, None, None

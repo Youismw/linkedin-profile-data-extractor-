@@ -47,8 +47,8 @@ SKILLS_PATTERNS: Final[list[re.Pattern[str]]] = [
 
 SKIP_SECTION_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(
-        r"^(more profiles for you|people you may know|"
-        r"you might like|ad options|don't want to see this)",
+        r"^(more profiles for you|people you may know|people also viewed|"
+        r"pages for you|you might like|ad options|don't want to see this)",
         re.IGNORECASE,
     ),
     re.compile(r"^\d+\s+notification", re.IGNORECASE),
@@ -62,7 +62,11 @@ PRONOUN_PATTERN: Final[re.Pattern[str]] = re.compile(
 
 # Interactive button labels filtered from experience and education raw text
 NOISE_LINE_PATTERNS: Final[list[re.Pattern[str]]] = [
-    re.compile(r"^(show all|see credential|show credential|edit)\b", re.IGNORECASE),
+    re.compile(
+        r"^(show all|see credential|show credential|edit|follow|connect|message)\b", re.IGNORECASE
+    ),
+    re.compile(r"^\d+\s+(?:endorsements?|followers?|connections?)$", re.IGNORECASE),
+    re.compile(r"^request\s+services\b", re.IGNORECASE),
 ]
 
 # Stable section IDs used in LinkedIn DOM
@@ -73,14 +77,51 @@ KNOWN_SECTION_IDS: Final[dict[str, str]] = {
     "skills": "skills",
 }
 
-# Non-visible elements stripped from the DOM before text parsing
+# Non-visible and UI junk elements stripped from the DOM before text parsing
 STRIP_TAGS: Final[list[str]] = [
     "script",
     "style",
     "noscript",
     "svg",
     "template",
+    "aside",
+    "footer",
+    "nav",
+    "dialog",
+    "video",
+    "audio",
 ]
+
+# Structural noise selectors stripped from the DOM to eliminate video player modals,
+# footer language lists, and navigation chrome
+STRIP_SELECTORS: Final[list[str]] = [
+    '[role="dialog"]',
+    ".artdeco-modal",
+    ".vjs-modal-dialog",
+    ".video-js",
+    "footer",
+    "nav",
+    ".global-nav",
+    ".global-footer",
+]
+
+# Employment type suffixes (e.g. ' · Full-time', ' · Internship') to strip from company names
+EMPLOYMENT_TYPE_SUFFIX_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\s*[\u00b7·]\s*(?:Full-time|Part-time|Internship|Contract|Self-employed|Freelance|Seasonal)\b.*$",
+    re.IGNORECASE,
+)
+
+# Date range pattern matching employment timeframes (e.g. 'Oct 2026 - Present · 2 mos')
+DATE_RANGE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|\d{4})\b.*\b(?:Present|\d{4})\b",
+    re.IGNORECASE,
+)
+
+# Duration pattern matching tenure lengths (e.g. '22 yrs 8 mos', '5 mos', '1 yr 4 mos')
+DURATION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:\d+\s+(?:yr|yrs|mo|mos|year|years|month|months))\b",
+    re.IGNORECASE,
+)
 
 # Structural selectors for Top Card fallback
 NAME_TAGS: Final[list[str]] = ["h1"]
