@@ -1,7 +1,10 @@
-"""Fetcher protocol, data structures, and fake implementations."""
+"""Fetcher package: protocols, implementations, detection, and login helper."""
 
 from typing import Protocol
 
+from profile_extractor.fetcher.detection import detect_outcome
+from profile_extractor.fetcher.login import run_interactive_login
+from profile_extractor.fetcher.playwright_fetcher import PlaywrightFetcher
 from profile_extractor.models import FetchResult, Reason, Status
 from profile_extractor.urls import extract_slug
 
@@ -61,4 +64,11 @@ class FakeFetcher:
         self.is_closed = True
 
 
-__all__ = ["Fetcher", "FakeFetcher", "FetchResult"]
+__all__ = [
+    "Fetcher",
+    "FakeFetcher",
+    "PlaywrightFetcher",
+    "FetchResult",
+    "detect_outcome",
+    "run_interactive_login",
+]

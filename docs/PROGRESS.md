@@ -6,7 +6,7 @@
 - [x] Phase 2: URLs and Input Reader
 - [x] Phase 3: Writer
 - [x] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
-- [ ] Phase 5: Playwright Fetcher and login helper (Live / H1)
+- [/] Phase 5: Playwright Fetcher and login helper (Awaiting Checkpoint H1 live login)
 - [ ] Phase 6: Parser (H3)
 - [ ] Phase 7: Integration and hardening (H4)
 - [ ] Phase 8: Documentation and handover
@@ -83,3 +83,16 @@
   - Phase 4 Acceptance Gate passed (27 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.
+
+---
+
+## Phase 5: Playwright Fetcher and login helper
+- **Status**: In Progress (Ready for Human Checkpoint H1)
+- **Done**:
+  - Created `src/profile_extractor/fetcher/detection.py` with comprehensive signature patterns for `blocked`, `not_found`, and `not_visible` (authwall).
+  - Created `src/profile_extractor/fetcher/login.py` interactive Chromium login tool saving session state to `.auth/state.json`.
+  - Created `src/profile_extractor/fetcher/playwright_fetcher.py` with session loading, incremental scrolling for lazy elements, timeout handling, and debug fixture snapshotting.
+  - Created `tests/test_detection.py` and `tests/test_playwright_fetcher.py` covering unit detection rules, timeout handling, and no-session authwall outcome.
+  - All unit & contract checks passing (34 tests).
+- **Skipped**: Live test (marked `live`, requires live session).
+- **Open Issues**: Human Checkpoint H1 required to save live session.

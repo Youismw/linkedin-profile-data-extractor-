@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from profile_extractor.config import load_config
-from profile_extractor.fetcher import FakeFetcher
+from profile_extractor.fetcher import FakeFetcher, PlaywrightFetcher, run_interactive_login
 from profile_extractor.logging_setup import setup_logging
 from profile_extractor.orchestrator import run_pipeline
 
@@ -75,12 +75,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "login":
-        # Placeholder until Phase 5
-        print(
-            "Login helper will be launched in Phase 5. "
-            "It will open Chromium for the consenting employee to log in."
-        )
-        return 0
+        auth_path = args.auth_path or ".auth/state.json"
+        try:
+            run_interactive_login(auth_path)
+            return 0
+        except Exception as e:
+            print(f"Login failed: {e}", file=sys.stderr)
+            return 1
 
     if args.command == "run":
         overrides: dict[str, object] = {}
@@ -94,8 +95,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)
 
-        # Default to FakeFetcher until PlaywrightFetcher is implemented in Phase 5
-        fetcher = FakeFetcher()
+        # Select fetcher
+        if args.fake:
+            fetcher = FakeFetcher()
+        else:
+            fetcher = PlaywrightFetcher(
+                auth_state_path=config.auth_state_path,
+                headless=config.headless,
+                timeout_seconds=config.page_timeout_seconds,
+            )
+
         try:
             summary = run_pipeline(config, fetcher)
             print(
