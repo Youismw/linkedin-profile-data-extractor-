@@ -1,0 +1,22 @@
+# Environments and Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Project specific gitignored directories (Plan Section 6)
+input/
+output/
+.auth/
+logs/
+tests/fixtures/private/
+
+# Tool and cache artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/

@@ -1,0 +1,35 @@
+# LinkedIn Profile Extractor Configuration
+
+input_file = "input/profiles.xlsx"
+output_dir = "output"
+auth_state_path = ".auth/state.json"
+
+# Important fields expected in profile extraction
+important_fields = [
+    "name",
+    "headline",
+    "location",
+    "about",
+    "experience",
+    "education",
+    "skills",
+]
+
+# Polite pacing: random delay between profiles (in seconds)
+delay_seconds_min = 5.0
+delay_seconds_max = 12.0
+
+# Timeout per page in seconds
+page_timeout_seconds = 30.0
+
+# Maximum profiles to process in a single run (null for all rows)
+max_profiles = 0
+
+# Playwright browser mode
+headless = true
+
+# Stop the run immediately when a block/challenge is encountered
+stop_on_block = true
+
+# Logging level: DEBUG, INFO, WARNING, ERROR
+log_level = "INFO"
