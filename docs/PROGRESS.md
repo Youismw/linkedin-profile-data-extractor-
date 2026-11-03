@@ -4,7 +4,7 @@
 - [x] Phase 0: Scaffold
 - [x] Phase 1: Contracts
 - [x] Phase 2: URLs and Input Reader
-- [ ] Phase 3: Writer
+- [x] Phase 3: Writer
 - [ ] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
 - [ ] Phase 5: Playwright Fetcher and login helper (Live / H1)
 - [ ] Phase 6: Parser (H3)
@@ -55,3 +55,17 @@
   - Phase 2 Acceptance Gate passed (17 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None (awaiting real sample Excel file at checkpoint H2).
+
+---
+
+## Phase 3: Writer
+- **Status**: Completed
+- **Done**:
+  - Created `src/profile_extractor/writer.py`:
+    - `write_profile_json`: atomic file replacement via temporary file, 2-space indentation, UTF-8, `ensure_ascii=False`, restrictive file permissions where supported.
+    - `write_unreachable_report`: writes `unreachable_profiles.xlsx` with exact columns and sheet name `unreachable` only when unreachable records exist (skipped if none).
+    - `write_run_summary`: atomic write of `run_summary.json`.
+  - Created `tests/test_writer.py` verifying atomic replacement, corruption prevention upon simulated write failure, native Unicode retention, and correct Excel generation.
+  - Phase 3 Acceptance Gate passed (23 total tests passing, 0 ruff errors, 0 pyright errors).
+- **Skipped**: None.
+- **Open Issues**: None.
