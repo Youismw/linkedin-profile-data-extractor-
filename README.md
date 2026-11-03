@@ -90,58 +90,41 @@ python -m venv .venv
 
 ## Usage
 
-### 1. One-Time Manual Login (Temporary PoC Setup)
-To authenticate the temporary Chromium session for the demo:
-```powershell
-$env:PYTHONPATH="src"
-.\.venv\Scripts\python.exe -m profile_extractor login
-```
-1. A visible Chromium window will open at `https://www.linkedin.com/login`.
-2. The consenting employee signs in manually (including completing 2FA).
-3. Once the LinkedIn feed loads, return to the terminal and press **[ENTER]**.
-4. The authenticated session is saved to `.auth/state.json` (gitignored).
-
-> [!NOTE]
-> **Why is login manual instead of automated with stored credentials?**  
-> Storing LinkedIn passwords in files violates security best practices (CWE-256) and immediately triggers LinkedIn's anti-bot defense (visual CAPTCHAs, Arkose challenges, and 2FA SMS prompts) which fail under automation. Performing a 30-second manual login once allows genuine 2FA completion and creates a reusable session cookie file (`.auth/state.json`) that powers 100% headless automated extractions thereafter. In production, browser scraping is replaced with official API OAuth tokens.
-
-### 2. Running Extraction
-
-#### Quick Commands (Shortcuts)
-Two shortcut scripts are provided so you don't have to type long python commands or set environment variables:
+### The Single Command
+Run the tool using the unified `.\run` command:
 
 ```powershell
-# 1. Default Run (reads input/profiles.xlsx -> outputs to output/)
+# 1. Default (uses input/profiles.xlsx and saves to the inside 'output' folder)
 .\run
 
-# 2. Output to ANY folder anywhere on your computer
-.\run -o "C:\Users\ROHIT CHAUHAN\Desktop\Extracted Profiles"
-.\run -o "D:\MyData\Profiles"
+# 2. Specify an input file (output defaults to inside 'output' folder)
+.\run "C:\path\to\candidates.xlsx"
 
-# 3. Simple positional syntax (input file, output folder)
-.\run input/profiles.xlsx "D:\Extracted Profiles"
+# 3. Specify an input folder (tool finds the .xlsx inside it automatically)
+.\run "C:\path\to\folder_with_excel"
 
-# 4. Fast mode (short delays for quick test batches)
-.\run --fast
-
-# 5. Offline Demo / Instant Test mode (< 1s execution)
-.\run --fake
+# 4. Specify input AND custom output folder anywhere on the machine
+.\run "C:\path\to\candidates.xlsx" "D:\MyData\ExtractedProfiles"
 ```
 
-#### Full Python Command (Alternative)
-```powershell
-.\.venv\Scripts\python.exe -m profile_extractor run -i input/profiles.xlsx -o output
-```
+> [!TIP]
+> **Output Folder Is Optional**: If you leave the second path empty, the tool automatically puts everything into the local `output` directory and pops it open in Windows File Explorer when finished.
 
-### CLI Arguments & Shorthands
-- `input_pos`: Optional positional input Excel path.
-- `output_pos`: Optional positional output directory anywhere on the machine.
-- `--input`, `-i`: Path to the input Excel spreadsheet (`.xlsx`).
-- `--output`, `-o`: Output folder (accepts any absolute or relative path anywhere on the machine).
-- `--config`, `-c`: Path to custom `config.toml`.
-- `--max-profiles`: Limit number of valid profiles processed in this run.
-- `--fast`: Fast mode (minimal 0.5s–1.0s delays for quick testing).
-- `--fake`: Run using `FakeFetcher` (offline demonstration and CI testing).
+---
+
+### Automatic Session Expiry & Relogin
+You do not need to run a separate login command. 
+
+Whenever you run `.\run`, the tool automatically checks if your LinkedIn session is active:
+- **If your session is active**: Extraction starts immediately.
+- **If your session has expired or is missing**: The tool automatically displays:
+  ```text
+  ======================================================================
+  [!] LinkedIn session not found or has expired.
+      Opening LinkedIn login window now. Please sign in to continue...
+  ======================================================================
+  ```
+  It opens a visible browser window directly to `https://www.linkedin.com/login`. You sign in (including 2FA), press **[ENTER]** in your terminal, and the tool immediately saves the fresh session and begins extracting your profiles automatically.
 
 ---
 
