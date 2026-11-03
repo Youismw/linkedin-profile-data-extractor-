@@ -32,6 +32,8 @@ where = ["src"]
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
 typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]

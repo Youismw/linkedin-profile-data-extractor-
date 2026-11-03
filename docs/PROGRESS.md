@@ -3,7 +3,7 @@
 ## Phase Summary
 - [x] Phase 0: Scaffold
 - [x] Phase 1: Contracts
-- [ ] Phase 2: URLs and Input Reader
+- [x] Phase 2: URLs and Input Reader
 - [ ] Phase 3: Writer
 - [ ] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
 - [ ] Phase 5: Playwright Fetcher and login helper (Live / H1)
@@ -38,3 +38,20 @@
   - Phase 1 Acceptance Gate passed (8 tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.
+
+---
+
+## Phase 2: URLs and Input Reader
+- **Status**: Completed
+- **Done**:
+  - Created `src/profile_extractor/urls.py`:
+    - Normalizes URLs across country subdomains, schemes, query parameters, fragments, and percent-encoding to canonical `https://www.linkedin.com/in/<slug>/`.
+    - Extracts slug and sanitizes safe file names (`[A-Za-z0-9._-]`), with deterministic fallback hash if empty.
+  - Created `src/profile_extractor/reader.py`:
+    - Tolerant reading of Excel worksheets, detecting headers automatically.
+    - Resolves raw text URLs and cell hyperlink targets.
+    - Handles blank rows and dedupes repeated slugs while retaining accurate counts.
+  - Created `tests/test_urls_and_reader.py` with over 20 URL valid/invalid variations, header/no-header/blank/hyperlink/duplicate/single-row cases, and 1000-row benchmark (passed in ~0.3s vs <2.0s limit).
+  - Phase 2 Acceptance Gate passed (17 total tests passing, 0 ruff errors, 0 pyright errors).
+- **Skipped**: None.
+- **Open Issues**: None (awaiting real sample Excel file at checkpoint H2).
