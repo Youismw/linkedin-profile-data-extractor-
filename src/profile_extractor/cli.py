@@ -22,6 +22,18 @@ def build_parser() -> argparse.ArgumentParser:
     # 'run' subcommand
     run_parser = subparsers.add_parser("run", help="Run the profile extraction pipeline")
     run_parser.add_argument(
+        "input_pos",
+        nargs="?",
+        default=None,
+        help="Optional input Excel file (positional shorthand for -i / --input)",
+    )
+    run_parser.add_argument(
+        "output_pos",
+        nargs="?",
+        default=None,
+        help="Optional output directory anywhere on machine (positional shorthand for -o)",
+    )
+    run_parser.add_argument(
         "--input",
         "-i",
         dest="input_file",
@@ -31,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         "-o",
         dest="output_dir",
-        help="Directory to save extracted JSON files and reports",
+        help="Directory to save extracted JSON files and reports (can be anywhere on the machine)",
     )
     run_parser.add_argument(
         "--config",
@@ -49,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fake",
         action="store_true",
         help="Run pipeline using FakeFetcher (useful for testing and demo fallback)",
+    )
+    run_parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Fast mode: minimal polite delays (0.5s - 1.0s) for quick testing/demos",
     )
 
     # 'login' subcommand
@@ -85,18 +102,30 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "run":
         overrides: dict[str, object] = {}
-        if args.input_file:
-            input_path = Path(args.input_file)
+        input_choice = args.input_file or args.input_pos
+        output_choice = args.output_dir or args.output_pos
+
+        if input_choice:
+            input_path = Path(input_choice)
             if not input_path.is_file():
                 # Check Desktop as convenient fallback
                 desktop_fallback = Path.home() / "Desktop" / input_path.name
                 if desktop_fallback.is_file():
                     input_path = desktop_fallback
             overrides["input_file"] = input_path
-        if args.output_dir:
-            overrides["output_dir"] = Path(args.output_dir)
+        else:
+            # Fallback: if default input/profiles.xlsx is missing, try demo_profiles.xlsx
+            default_input = Path("input/profiles.xlsx")
+            if not default_input.is_file() and Path("input/demo_profiles.xlsx").is_file():
+                overrides["input_file"] = Path("input/demo_profiles.xlsx")
+
+        if output_choice:
+            overrides["output_dir"] = Path(output_choice)
         if args.max_profiles is not None:
             overrides["max_profiles"] = args.max_profiles
+        if args.fast:
+            overrides["delay_seconds_min"] = 0.5
+            overrides["delay_seconds_max"] = 1.0
 
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)
