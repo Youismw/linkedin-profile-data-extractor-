@@ -19,6 +19,7 @@ from pathlib import Path
 from profile_extractor.config import load_config
 from profile_extractor.fetcher import (
     FakeFetcher,
+    Fetcher,
     PlaywrightFetcher,
     is_session_expired,
     run_interactive_login,
@@ -34,7 +35,9 @@ def _load_run_state() -> dict[str, str]:
     """Load previously saved input and output locations from .run_state.json."""
     if STATE_FILE.is_file():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
         except Exception:
             return {}
     return {}
@@ -234,6 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         setup_logging(level=config.log_level)
 
         # 4. Instantiate Fetcher with Session Health Check
+        fetcher: Fetcher
         if args.fake:
             fetcher = FakeFetcher()
         else:

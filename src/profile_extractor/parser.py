@@ -452,9 +452,9 @@ def parse_profile(
         ):
             exp_items: list[ExperienceItem] = []
             for it in items:
-                item = _parse_experience_item(it)
-                if item.raw:
-                    exp_items.append(item)
+                exp_item = _parse_experience_item(it)
+                if exp_item.raw:
+                    exp_items.append(exp_item)
             if exp_items:
                 experience = exp_items
             continue
@@ -466,9 +466,9 @@ def parse_profile(
         ):
             edu_items: list[EducationItem] = []
             for it in items:
-                item = _parse_education_item(it)
-                if item.raw:
-                    edu_items.append(item)
+                edu_item = _parse_education_item(it)
+                if edu_item.raw:
+                    edu_items.append(edu_item)
             if edu_items:
                 education = edu_items
             continue
