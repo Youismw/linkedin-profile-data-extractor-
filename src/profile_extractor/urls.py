@@ -95,3 +95,4 @@ def sanitize_slug(slug: str, fallback_seed: str = "") -> str:
         return f"profile-{hashed}"
 
     return sanitized
+

@@ -44,6 +44,9 @@ class PlaywrightFetcher:
 
     def _ensure_browser(self) -> BrowserContext:
         """Initialize playwright browser and context if not already active."""
+        if self._browser is not None and not self._browser.is_connected():
+            self.close()
+
         if self._context is not None:
             return self._context
 

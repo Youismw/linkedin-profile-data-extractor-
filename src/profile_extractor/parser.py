@@ -73,3 +73,4 @@ def parse_profile(
         profile=profile,
         other_sections=[OtherSection(heading="Interests", text="Technology")],
     )
+

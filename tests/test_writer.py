@@ -81,6 +81,10 @@ class TestWriter:
         # The original target file must be completely unharmed
         assert target_path.read_text(encoding="utf-8") == original_content
 
+        # No partial or temporary files left behind
+        tmp_files = list(tmp_path.glob("*.tmp"))
+        assert len(tmp_files) == 0
+
     def test_unreachable_report_columns_and_rows(self, tmp_path: Path) -> None:
         """Verify unreachable_profiles.xlsx has the correct sheet name, columns, and data."""
         records = [

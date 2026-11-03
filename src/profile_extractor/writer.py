@@ -41,8 +41,13 @@ def _atomic_write_text(target_path: Path, content: str) -> None:
         os.fsync(tmp_file.fileno())
 
     tmp_path = Path(tmp_name)
-    _set_restrictive_permissions(tmp_path)
-    os.replace(tmp_path, target_path)
+    try:
+        _set_restrictive_permissions(tmp_path)
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def write_profile_json(document: ProfileDocument, output_dir: Path | str) -> Path:

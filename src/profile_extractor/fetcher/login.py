@@ -32,7 +32,14 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
-        context = browser.new_context()
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        )
+        context = browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": 1280, "height": 900},
+        )
         page = context.new_page()
 
         logger.info("Opening visible browser to %s", LINKEDIN_LOGIN_URL)
@@ -42,8 +49,18 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
         input("\n>>> Press [ENTER] in this terminal AFTER you have successfully logged in: ")
 
         # Save session storage state
-        context.storage_state(path=str(target_path))
-        browser.close()
+        try:
+            context.storage_state(path=str(target_path))
+        except Exception as err:
+            logger.error("Failed to capture session state: %s", err)
+            raise RuntimeError(
+                f"Could not save session. Ensure browser was not prematurely closed: {err}"
+            ) from err
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     # Apply restrictive permissions where supported
     try:

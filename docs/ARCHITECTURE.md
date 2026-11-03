@@ -1,3 +1,90 @@
-# Architecture Documentation
+# Architecture & Design Specification
 
-Detailed component diagrams, workflows, and risk register. (Populated in Phase 8).
+## System Overview
+
+The **LinkedIn Profile Extractor** is built around clean boundaries, explicit data contracts, and dependency inversion to decouple pipeline orchestration from network fetching.
+
+---
+
+## Component Architecture
+
+```mermaid
+flowchart TD
+    subgraph Input ["1. Input Layer"]
+        ExcelFile["input/profiles.xlsx"] --> Reader["reader.py"]
+        Reader --> URLNorm["urls.py"]
+    end
+
+    subgraph Core ["2. Orchestration Layer"]
+        Reader --> Orchestrator["orchestrator.py"]
+        Config["config.py"] --> Orchestrator
+        Orchestrator --> Pacing["Polite Pacing & Backoff"]
+    end
+
+    subgraph Fetch ["3. Fetching Layer (Swappable Protocol)"]
+        Orchestrator --> FetcherInterface["Fetcher (Protocol)"]
+        FetcherInterface -.-> FakeFetcher["FakeFetcher (Testing & Demo Fallback)"]
+        FetcherInterface -.-> PlaywrightFetcher["PlaywrightFetcher (PoC Headless Chromium)"]
+        FetcherInterface -.-> FutureAPI["Production API Fetcher (Official / B2B)"]
+        PlaywrightFetcher --> Detection["detection.py"]
+    end
+
+    subgraph Parse ["4. Parsing Layer"]
+        Orchestrator --> Parser["parser.py"]
+        Parser --> ParserRules["parser_rules.py"]
+    end
+
+    subgraph Output ["5. Persistence Layer"]
+        Orchestrator --> Writer["writer.py"]
+        Writer --> ProfileJSON["output/<slug>.json (Atomic)"]
+        Writer --> UnreachableXLSX["output/unreachable_profiles.xlsx"]
+        Writer --> RunSummaryJSON["output/run_summary.json"]
+    end
+```
+
+---
+
+## Component Responsibilities ("Does and Does Not Do")
+
+| Component | What It DOES | What It DOES NOT Do |
+| :--- | :--- | :--- |
+| **Input Reader** (`reader.py`, `urls.py`) | Reads Excel sheets; normalizes profile URLs to canonical `/in/<slug>/`; sanitizes slugs; filters blank rows; dedupes repeated links. | Does not make network requests; does not decide how to handle failed rows. |
+| **Fetcher Protocol** (`fetcher/`) | Defines `fetch(url) -> FetchResult` interface; isolates implementation details (Playwright vs. API vs. Fake). | Does not parse DOM structure; does not write files or track counts. |
+| **Detection Engine** (`detection.py`) | Inspects URLs and page content for authwalls (`not_visible`), missing profiles (`not_found`), or security challenges (`blocked`). | Does not retry or attempt to bypass security challenges. |
+| **Parser** (`parser.py`, `parser_rules.py`) | Extracts structured fields from HTML; compiles unmapped sections into `other_sections`; computes missing fields. | Does not make network calls; does not write to disk. |
+| **Writer** (`writer.py`) | Atomically writes JSON files; produces unreachable Excel report; outputs summary statistics; cleans temporary files. | Does not make business logic or validation decisions. |
+| **Orchestrator** (`orchestrator.py`) | Drives row processing; enforces polite random delays; isolates per-row exceptions; halts on block; tallies complete metrics. | Does not contain HTML parsing logic or fetch transport details. |
+
+---
+
+## Risk Register & Mitigation Strategy
+
+| Risk Category | Specific Risk | Severity | PoC Mitigation | Required Production Mitigation |
+| :--- | :--- | :--- | :--- | :--- |
+| **Legal / Terms of Service** | Automated access to LinkedIn violates Section 8.2 of LinkedIn User Agreement. | **High** | Restricted strictly to 5–6 consenting employee profiles for demo purposes. | **Replace with official LinkedIn Enterprise API or licensed data partners** (Proxycurl, People Data Labs) with contractual indemnification. |
+| **Account Restriction / Banning** | Scraping activity triggers automated fraud flags, CAPTCHAs, or temporary account suspensions. | **High** | Polite pacing (5–12s random delays), `stop_on_block=true` halts run immediately without loop retries. | Eliminate user session scraping entirely; use API tokens and server-to-server OAuth. |
+| **Personal Data Privacy (GDPR / CCPA)** | Processing candidate personal data without compliant legal basis or retention schedule. | **High** | Profile data strictly confined to gitignored output; zero candidate data printed in logs. | Implement candidate privacy notices, explicit lawful basis (GDPR Art. 6), 90-day retention TTL, and automated deletion APIs. |
+| **Operational Fragility** | LinkedIn frequently modifies DOM class names and layout structures. | **Medium** | Centralized selectors in `parser_rules.py`; unstructured text captured into `other_sections`. | Provider API models provide fixed, versioned JSON schemas unaffected by UI changes. |
+| **Data Corruption** | Interrupted write leaves partial or corrupt JSON files. | **Low** | Atomic file writing via temporary files with automatic rollback on error. | Distributed transactional storage (ACID database). |
+
+---
+
+## Target Production Transition Plan
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor ATS as Recruiting ATS / HR System
+    participant Queue as SQS / RabbitMQ
+    participant Worker as Extractor Worker
+    participant Provider as Licensed Partner / Official API
+    participant DB as Postgres / DynamoDB (Encrypted)
+
+    ATS->>Queue: Enqueue profile extraction job (URL, candidate_id)
+    Queue->>Worker: Dequeue message
+    Worker->>Provider: GET /v2/profile?url=... (OAuth 2.0 Auth Bearer)
+    Provider-->>Worker: Structured JSON response
+    Worker->>Worker: Validate against Pydantic schema
+    Worker->>DB: Upsert record (AES-256 encrypted, TTL = 90 days)
+    Worker->>Queue: Acknowledge & commit message
+```
