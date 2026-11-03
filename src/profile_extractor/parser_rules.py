@@ -7,24 +7,46 @@ ensuring layout changes are a single-file modification without generated CSS cla
 import re
 from typing import Final
 
-# Heading keywords (case-insensitive regex patterns)
+# Heading keywords (case-insensitive regex patterns matching word boundaries or variations)
 ABOUT_PATTERNS: Final[list[re.Pattern[str]]] = [
-    re.compile(r"^about$", re.IGNORECASE),
-    re.compile(r"^summary$", re.IGNORECASE),
+    re.compile(r"^about\b", re.IGNORECASE),
+    re.compile(r"^summary\b", re.IGNORECASE),
 ]
 
 EXPERIENCE_PATTERNS: Final[list[re.Pattern[str]]] = [
-    re.compile(r"^experience$", re.IGNORECASE),
-    re.compile(r"^work experience$", re.IGNORECASE),
+    re.compile(r"^experience\b", re.IGNORECASE),
+    re.compile(r"^work experience\b", re.IGNORECASE),
 ]
 
 EDUCATION_PATTERNS: Final[list[re.Pattern[str]]] = [
-    re.compile(r"^education$", re.IGNORECASE),
+    re.compile(r"^education\b", re.IGNORECASE),
 ]
 
 SKILLS_PATTERNS: Final[list[re.Pattern[str]]] = [
-    re.compile(r"^skills$", re.IGNORECASE),
-    re.compile(r"^skills & endorsements$", re.IGNORECASE),
+    re.compile(r"^skills?\b", re.IGNORECASE),
+    re.compile(r"^skills\s*&", re.IGNORECASE),
+    re.compile(r"^featured skills\b", re.IGNORECASE),
+]
+
+# Sidebar recommendations, ad popups, and non-profile widget patterns to exclude
+SKIP_SECTION_PATTERNS: Final[list[re.Pattern[str]]] = [
+    re.compile(
+        r"^(more profiles for you|people you may know|"
+        r"you might like|ad options|don't want to see this)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\d+\s+notification", re.IGNORECASE),
+]
+
+# Pronoun patterns in top card
+PRONOUN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^[\(\[]?(?:he/him|she/her|they/them|he/they|she/they)[\)\]]?$",
+    re.IGNORECASE,
+)
+
+# Common UI buttons and noise lines within items
+NOISE_LINE_PATTERNS: Final[list[re.Pattern[str]]] = [
+    re.compile(r"^(show all|see credential|show credential|edit)\b", re.IGNORECASE),
 ]
 
 # Section IDs or data attributes that LinkedIn uses stably

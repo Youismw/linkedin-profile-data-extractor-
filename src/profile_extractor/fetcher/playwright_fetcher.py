@@ -85,15 +85,26 @@ class PlaywrightFetcher:
                 response = page.goto(url, wait_until="domcontentloaded")
                 status_code = response.status if response else None
 
-                # Incremental scrolling to load lazy-rendered profile sections
-                current_height = page.evaluate("() => document.body.scrollHeight")
+                # Progressive scrolling targeting both <main> and window to load lazy sections
                 for _ in range(self.max_scroll_steps):
-                    page.evaluate("() => window.scrollBy(0, 800)")
+                    scroll_info = page.evaluate("""() => {
+                        const m = document.querySelector('main')
+                            || document.scrollingElement
+                            || document.documentElement;
+                        const prevScrollTop = m.scrollTop;
+                        m.scrollTop += 600;
+                        window.scrollBy(0, 600);
+                        return {
+                            moved: m.scrollTop > prevScrollTop,
+                            atBottom: (m.scrollTop + m.clientHeight + 50) >= m.scrollHeight
+                        };
+                    }""")
                     page.wait_for_timeout(self.scroll_step_delay_ms)
-                    new_height = page.evaluate("() => document.body.scrollHeight")
-                    if new_height == current_height:
-                        break
-                    current_height = new_height
+                    if isinstance(scroll_info, dict):
+                        if not scroll_info.get("moved") and scroll_info.get("atBottom"):
+                            break
+
+                page.wait_for_timeout(1000)
 
                 current_url = page.url
                 html = page.content()

@@ -21,7 +21,10 @@ from profile_extractor.parser_rules import (
     EDUCATION_PATTERNS,
     EXPERIENCE_PATTERNS,
     KNOWN_SECTION_IDS,
+    NOISE_LINE_PATTERNS,
+    PRONOUN_PATTERN,
     SKILLS_PATTERNS,
+    SKIP_SECTION_PATTERNS,
     STRIP_TAGS,
 )
 
@@ -41,7 +44,7 @@ def _matches_any_pattern(text: str, patterns: list[re.Pattern[str]]) -> bool:
 
 def _extract_section_heading(section: Tag) -> str:
     """Find and return the heading text of a section."""
-    # Check for h2, h3, header, or aria-label
+    # Check for direct h2, h3, header, or aria-label
     for heading_tag in section.find_all(["h2", "h3", "header"], recursive=True):
         txt = _clean_text(heading_tag.get_text())
         if txt:
@@ -56,10 +59,43 @@ def _extract_section_heading(section: Tag) -> str:
     return ""
 
 
-def _parse_experience_item(li: Tag) -> ExperienceItem:
-    """Extract structured fields and complete raw text from an experience list item."""
-    raw_text = _clean_text(li.get_text(separator=" | "))
-    lines = [_clean_text(line) for line in li.stripped_strings if _clean_text(line)]
+def _get_section_items(sec: Tag) -> list[Tag]:
+    """Extract item tags (li, role=listitem, or LazyColumn items) from a section."""
+    lis = sec.find_all("li", recursive=True)
+    if lis:
+        return [li for li in lis if isinstance(li, Tag)]
+
+    lazy_col = sec.select_one('[data-component-type="LazyColumn"]')
+    if lazy_col:
+        items = [
+            el
+            for el in lazy_col.select("div[componentkey]")
+            if str(el.get("componentkey", "")).startswith("entity-collection-item")
+        ]
+        if items:
+            return items
+        role_items = [el for el in lazy_col.select('[role="listitem"]') if isinstance(el, Tag)]
+        if role_items:
+            return role_items
+        direct_children = [c for c in lazy_col.children if isinstance(c, Tag)]
+        if direct_children:
+            return direct_children
+
+    role_items = [el for el in sec.select('[role="listitem"]') if isinstance(el, Tag)]
+    if role_items:
+        return role_items
+
+    return []
+
+
+def _parse_experience_item(tag: Tag) -> ExperienceItem:
+    """Extract structured fields and complete raw text from an experience item."""
+    lines = [
+        _clean_text(line)
+        for line in tag.stripped_strings
+        if _clean_text(line) and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
+    ]
+    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
 
     title: str | None = None
     company: str | None = None
@@ -68,15 +104,28 @@ def _parse_experience_item(li: Tag) -> ExperienceItem:
     description: str | None = None
 
     if lines:
-        title = lines[0]
-    if len(lines) > 1:
-        company = lines[1]
-    if len(lines) > 2:
-        dates = lines[2]
-    if len(lines) > 3:
-        location = lines[3]
-    if len(lines) > 4:
-        description = " ".join(lines[4:])
+        # Multi-role at company heuristic: line 1 has duration words ("22 yrs 8 mos")
+        has_duration = re.search(
+            r"\b(?:yr|yrs|mo|mos|year|years|month|months)\b",
+            lines[1],
+            re.IGNORECASE,
+        )
+        if len(lines) > 1 and has_duration:
+            company = lines[0]
+            title = lines[2] if len(lines) > 2 else lines[0]
+            dates = lines[3] if len(lines) > 3 else lines[1]
+            if len(lines) > 4:
+                description = " ".join(lines[4:])
+        else:
+            title = lines[0]
+            if len(lines) > 1:
+                company = lines[1]
+            if len(lines) > 2:
+                dates = lines[2]
+            if len(lines) > 3:
+                location = lines[3]
+            if len(lines) > 4:
+                description = " ".join(lines[4:])
 
     return ExperienceItem(
         title=title,
@@ -88,10 +137,14 @@ def _parse_experience_item(li: Tag) -> ExperienceItem:
     )
 
 
-def _parse_education_item(li: Tag) -> EducationItem:
-    """Extract structured fields and complete raw text from an education list item."""
-    raw_text = _clean_text(li.get_text(separator=" | "))
-    lines = [_clean_text(line) for line in li.stripped_strings if _clean_text(line)]
+def _parse_education_item(tag: Tag) -> EducationItem:
+    """Extract structured fields and complete raw text from an education item."""
+    lines = [
+        _clean_text(line)
+        for line in tag.stripped_strings
+        if _clean_text(line) and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
+    ]
+    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
 
     school: str | None = None
     degree: str | None = None
@@ -174,16 +227,27 @@ def parse_profile(
     main = soup.find("main") or soup
     top_card = None
 
+    # Filter out layout containers, nested carousels, and dialogs
+    valid_sections: list[Tag] = []
+    for sec in main.find_all("section"):
+        if sec.get("aria-label") == "Primary content":
+            continue
+        if sec.get("aria-roledescription") == "carousel" or sec.get("data-testid") == "carousel":
+            continue
+        sec_text = sec.get_text(strip=True)
+        if re.search(r"^\d+\s+notification", sec_text, re.IGNORECASE):
+            continue
+        valid_sections.append(sec)
+
     # Strategy A: Check <h1> tags
     h1 = soup.find("h1")
     if h1 and _clean_text(h1.get_text()):
         name = _clean_text(h1.get_text())
         top_card = h1.find_parent("section")
 
-    # Strategy B: First section in <main> (LinkedIn logged-in profile top card)
-    main_sections = main.find_all("section")
-    if not top_card and main_sections:
-        top_card = main_sections[0]
+    # Strategy B: First valid section in <main> (LinkedIn logged-in profile top card)
+    if not top_card and valid_sections:
+        top_card = valid_sections[0]
 
     if top_card:
         top_lines = [_clean_text(s) for s in top_card.stripped_strings if _clean_text(s)]
@@ -191,8 +255,8 @@ def parse_profile(
         filtered = [
             line
             for line in top_lines
-            if not re.search(r"^\d+\s+notification", line, re.I)
-            and not re.search(r"^ad\s+options", line, re.I)
+            if not re.search(r"^\d+\s+notification", line, re.IGNORECASE)
+            and not re.search(r"^ad\s+options", line, re.IGNORECASE)
         ]
 
         if not name and filtered:
@@ -201,9 +265,29 @@ def parse_profile(
         if name and filtered:
             try:
                 name_idx = filtered.index(name)
-                if name_idx + 1 < len(filtered):
-                    headline = filtered[name_idx + 1]
-                for cand in filtered[name_idx + 2 : name_idx + 6]:
+                # Headline: skip pronouns, dashes, and UI labels
+                for cand in filtered[name_idx + 1 : name_idx + 4]:
+                    if PRONOUN_PATTERN.match(cand):
+                        continue
+                    if cand in ["--", "-", "—"]:
+                        continue
+                    if any(
+                        kw in cand.lower()
+                        for kw in [
+                            "contact info",
+                            "connections",
+                            "connect",
+                            "message",
+                            "more",
+                            "followers",
+                        ]
+                    ):
+                        continue
+                    headline = cand
+                    break
+
+                # Location
+                for cand in filtered[name_idx + 1 : name_idx + 7]:
                     if "," in cand or any(
                         kw in cand.lower()
                         for kw in [
@@ -215,10 +299,20 @@ def parse_profile(
                             "uk",
                             "canada",
                             "california",
+                            "delhi",
+                            "london",
                         ]
                     ):
-                        location = cand
-                        break
+                        noise_kws = [
+                            "contact info",
+                            "connections",
+                            "connect",
+                            "message",
+                            "followers",
+                        ]
+                        if not any(kw in cand.lower() for kw in noise_kws):
+                            location = cand
+                            break
             except ValueError:
                 pass
 
@@ -252,20 +346,29 @@ def parse_profile(
     skills: list[str] | None = None
     other_sections: list[OtherSection] = []
 
-    sections = soup.find_all("section")
     seen_sections: set[int] = set()
 
-    for sec in sections:
+    for sec in valid_sections:
         if id(sec) in seen_sections:
             continue
         seen_sections.add(id(sec))
 
-        # Skip top card if it contains h1
+        # Skip top card
         if top_card and sec == top_card:
             continue
 
         heading = _extract_section_heading(sec)
         sec_id = str(sec.get("id") or "").lower()
+
+        # Skip sidebar recommendations and ad dialogs
+        if _matches_any_pattern(heading, SKIP_SECTION_PATTERNS):
+            continue
+
+        # Skip redundant heading matching candidate name
+        if name and heading.lower() == name.lower():
+            continue
+
+        items = _get_section_items(sec)
 
         # Check About
         if _matches_any_pattern(heading, ABOUT_PATTERNS) or sec_id == KNOWN_SECTION_IDS["about"]:
@@ -273,6 +376,8 @@ def parse_profile(
             # Strip heading if present at start
             if heading and body_text.startswith(heading):
                 body_text = _clean_text(body_text[len(heading) :])
+            body_text = re.sub(r"\s*\.\.\.more$", "", body_text)
+            body_text = re.sub(r"\s*\bsee more$", "", body_text, flags=re.IGNORECASE)
             if body_text:
                 about = body_text
             continue
@@ -282,13 +387,13 @@ def parse_profile(
             _matches_any_pattern(heading, EXPERIENCE_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["experience"]
         ):
-            items = []
-            for li in sec.find_all("li", recursive=True):
-                item = _parse_experience_item(li)
+            exp_items: list[ExperienceItem] = []
+            for it in items:
+                item = _parse_experience_item(it)
                 if item.raw:
-                    items.append(item)
-            if items:
-                experience = items
+                    exp_items.append(item)
+            if exp_items:
+                experience = exp_items
             continue
 
         # Check Education
@@ -296,22 +401,27 @@ def parse_profile(
             _matches_any_pattern(heading, EDUCATION_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["education"]
         ):
-            items = []
-            for li in sec.find_all("li", recursive=True):
-                item = _parse_education_item(li)
+            edu_items: list[EducationItem] = []
+            for it in items:
+                item = _parse_education_item(it)
                 if item.raw:
-                    items.append(item)
-            if items:
-                education = items
+                    edu_items.append(item)
+            if edu_items:
+                education = edu_items
             continue
 
         # Check Skills
         if _matches_any_pattern(heading, SKILLS_PATTERNS) or sec_id == KNOWN_SECTION_IDS["skills"]:
             skill_list: list[str] = []
-            for li in sec.find_all("li", recursive=True):
-                txt = _clean_text(li.get_text())
-                if txt:
-                    skill_list.append(txt)
+            for it in items:
+                lines = [_clean_text(s) for s in it.stripped_strings if _clean_text(s)]
+                if lines:
+                    skill_name = lines[0]
+                    if (
+                        not re.search(r"^\d+\s+endorsements?$", skill_name, re.IGNORECASE)
+                        and not re.search(r"^show all\b", skill_name, re.IGNORECASE)
+                    ):
+                        skill_list.append(skill_name)
             if skill_list:
                 skills = skill_list
             continue
@@ -321,7 +431,7 @@ def parse_profile(
         if sec_content:
             if heading and sec_content.startswith(heading):
                 sec_content = _clean_text(sec_content[len(heading) :])
-            if sec_content:
+            if sec_content and len(sec_content) > 5:
                 display_heading = heading or "Additional Information"
                 other_sections.append(OtherSection(heading=display_heading, text=sec_content))
 

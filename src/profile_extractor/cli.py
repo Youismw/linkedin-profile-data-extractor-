@@ -132,9 +132,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 abs_output = config.output_dir.resolve()
                 if sys.platform == "win32":
-                    import subprocess
+                    try:
+                        import os
 
-                    subprocess.Popen(["explorer.exe", str(abs_output)])
+                        os.startfile(str(abs_output))
+                    except Exception:
+                        import subprocess
+
+                        subprocess.Popen(["explorer.exe", str(abs_output)])
             except Exception:
                 pass
 
