@@ -9,7 +9,7 @@
 - [x] Phase 5: Playwright Fetcher and login helper (Live / H1)
 - [x] Phase 6: Parser (H3)
 - [x] Phase 7: Integration and hardening (H4)
-- [ ] Phase 8: Documentation and handover
+- [x] Phase 8: Documentation and handover
 
 ---
 
@@ -132,3 +132,28 @@
   - Phase 7 Acceptance Gate passed (42 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.
+
+---
+
+## Phase 8: Documentation and Handover
+- **Status**: Completed
+- **Done**:
+  - Created and polished `README.md`: project purpose, installation, configuration, CLI usage, failure reasons, known limitations, and how to swap the Fetcher with code examples.
+  - Created and polished `docs/ARCHITECTURE.md`: comprehensive Mermaid component diagram, Does/Does-Not matrix, risk register with mitigations, detailed technical explanation of why automated headless login is disallowed (CWE-256, 2FA, anti-bot), and production transition sequence diagram.
+  - Created and polished `docs/HANDOVER.md`: executive summary, management decisions required (applicant consent, Terms of Service, data retention schedule, production API selection), senior reviewer Q&A cheat sheet, and 3-minute demo script with offline fallback.
+  - Tested running in clean environment with `FakeFetcher` on `input/demo_profiles.xlsx` (completed in 6.91s vs 10m gate limit).
+  - Phase 8 Acceptance Gate passed.
+- **Skipped**: None.
+- **Open Issues**: None.
+
+---
+
+## Project Definition of Done Checklist
+- [x] One JSON per reachable profile, valid against the contract, in one folder
+- [x] Unreachable profiles marked in JSON and listed in `unreachable_profiles.xlsx`
+- [x] `run_summary.json` accounts for every row (the counts add up mathematically)
+- [x] No hardcoded profile count; works for 1 row and 1000 rows
+- [x] Tests, lint, and type checks pass (42 tests, 0 ruff errors, 0 pyright errors)
+- [x] No personal data in logs or in the repository
+- [x] `README.md`, `docs/ARCHITECTURE.md`, and `docs/HANDOVER.md` complete, with limitations stated honestly
+- [x] Demo rehearsed once, including the fallback mode

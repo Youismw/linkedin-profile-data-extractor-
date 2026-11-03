@@ -193,7 +193,61 @@ Created only when at least one profile cannot be retrieved. Columns:
 - `detail`: Diagnostic explanation.
 - `timestamp_utc`: ISO timestamp.
 
-### Run Summary (`<output_dir>/run_summary.json`)
+### Failure Reasons & Diagnostic Meanings
+
+| Reason Enum | Meaning & Typical Cause | Output Produced |
+| :--- | :--- | :--- |
+| `invalid_url` | Malformed URL or non-LinkedIn link (cannot determine `/in/<slug>`). | Excel report only (no slug for JSON filename). |
+| `not_found` | Profile does not exist, was deleted, or changed username (HTTP 404). | `<slug>.json` (empty profile) + Excel report row. |
+| `not_visible` | Profile is restricted to 1st-degree connections or redirected to authwall. | `<slug>.json` (empty profile) + Excel report row. |
+| `blocked` | Encountered CAPTCHA, Arkose challenge, rate limit, or account warning. | `<slug>.json` + Excel row; triggers run halt if `stop_on_block=true`. |
+| `timeout` | Page navigation or DOM content loading exceeded `page_timeout_seconds`. | `<slug>.json` (empty profile) + Excel report row. |
+| `parse_failed` | Page loaded but neither candidate name (`h1`) nor headline was found. | `<slug>.json` (empty profile) + Excel report row. |
+| `unexpected_error`| Unhandled network drop or OS exception during row processing. | `<slug>.json` (empty profile) + Excel report row. |
+
+---
+
+## How to Swap the Fetcher (Extensibility)
+
+The codebase strictly decouples fetching through the `Fetcher` protocol in [`src/profile_extractor/fetcher/__init__.py`](file:///src/profile_extractor/fetcher/__init__.py).
+
+To plug in an official API or licensed data provider in production, implement the two-method protocol:
+
+```python
+from profile_extractor.models import FetchResult, Status
+
+class LicensedProviderFetcher:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def fetch(self, url: str) -> FetchResult:
+        # 1. Query licensed B2B provider API
+        # response = requests.get(f"https://api.provider.com/v1/profile?url={url}", headers={"Authorization": self.api_key})
+        # 2. Return FetchResult with html or mapped data
+        return FetchResult(
+            url=url,
+            status=Status.OK,
+            html="<html>...rendered payload...</html>",
+        )
+
+    def close(self) -> None:
+        pass  # cleanup connection pool
+```
+
+Pass your custom fetcher directly to `run_pipeline(config, fetcher)` in [`cli.py`](file:///src/profile_extractor/cli.py). Zero parsing, validation, or Excel logic needs to change.
+
+---
+
+## Known Limitations (v1 Prototype)
+
+1. **Volume Restriction**: Intended strictly for demo scale (5–6 profiles). Not designed for bulk extraction without official provider APIs.
+2. **Date Parsing**: Dates (e.g., "Jan 2020 - Present") are preserved as displayed text strings without datetime serialization in v1.
+3. **No Dynamic Resume / Caching**: Re-running the pipeline processes all rows from the beginning and atomically replaces existing output files.
+4. **Single-threaded Sequential Execution**: Profiles are fetched sequentially with deliberate delays to maintain polite pacing and avoid automated rate limiting.
+
+---
+
+## Testing & Quality Assurance
 Accounts for every single row processed:
 ```json
 {
