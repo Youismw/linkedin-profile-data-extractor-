@@ -148,6 +148,21 @@
 
 ---
 
+## Post-Phase 8 Enhancements & Bugfixes
+- **Status**: Completed
+- **Root Cause & Resolution**:
+  - **Scroll Container**: LinkedIn redesigned single-page application profiles place the scroll container on `<main id="workspace">` rather than `window` (leaving `document.body.scrollHeight` static at 900px). The fetcher now scrolls both `<main>` and `window` progressively, triggering all intersection observers and GraphQL lazy queries.
+  - **Component Structure**: Redesigned LinkedIn sections utilize `data-component-type="LazyColumn"` and ARIA listitems (`role="listitem"`) rather than traditional `<ul><li>`. The parser now recursively inspects `li`, `LazyColumn`, and ARIA item elements.
+  - **Layout Isolation**: Filtered out container layout wrappers (`aria-label="Primary content"`) and nested carousels (`aria-roledescription="carousel"`) from swallowing child sections or stealing top card metadata.
+  - **Top Card Refinement**: Filtered out candidate pronouns (`He/Him`, `She/Her`, etc.) and `--` empty placeholders from being misidentified as professional headlines.
+  - **Windows Explorer Popup**: Added dual `os.startfile` and `explorer.exe` process invocation to ensure the output directory automatically pops open upon run completion.
+  - **Directory Isolation**: Stored all generated profile JSONs inside `output/profiles/<slug>.json`, keeping root `output/` clean for `run_summary.json` and reports.
+- **Verification**: Verified on real profiles (`rohit-chauhan-464b15262`, `gaurav-akoliya-aa8a3636a`, `sundarpichai`). All 42 unit tests, `ruff check .`, and `pyright src tests` pass with 0 errors.
+
+---
+
+---
+
 ## Project Definition of Done Checklist
 - [x] One JSON per reachable profile, valid against the contract, in one folder
 - [x] Unreachable profiles marked in JSON and listed in `unreachable_profiles.xlsx`
