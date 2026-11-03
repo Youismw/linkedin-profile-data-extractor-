@@ -90,15 +90,16 @@ class TestWalkingSkeleton:
         assert summary.not_processed_count == 0
 
         # 4. Check JSON files created
-        assert (output_dir / "user-ok.json").exists()
-        assert (output_dir / "user-ok-2.json").exists()
-        assert (output_dir / "user-not-found.json").exists()
-        assert (output_dir / "user-not-visible.json").exists()
-        assert (output_dir / "user-crashed.json").exists()
-        assert not (output_dir / "not-a-valid-profile-url.json").exists()
+        profiles_dir = output_dir / "profiles"
+        assert (profiles_dir / "user-ok.json").exists()
+        assert (profiles_dir / "user-ok-2.json").exists()
+        assert (profiles_dir / "user-not-found.json").exists()
+        assert (profiles_dir / "user-not-visible.json").exists()
+        assert (profiles_dir / "user-crashed.json").exists()
+        assert not (profiles_dir / "not-a-valid-profile-url.json").exists()
 
         # Check crashed profile contract
-        crashed_json = json.loads((output_dir / "user-crashed.json").read_text(encoding="utf-8"))
+        crashed_json = json.loads((profiles_dir / "user-crashed.json").read_text(encoding="utf-8"))
         assert crashed_json["meta"]["status"] == "unreachable"
         assert crashed_json["meta"]["reason"] == "unexpected_error"
         assert crashed_json["profile"] == {}
@@ -159,10 +160,10 @@ class TestWalkingSkeleton:
         assert summary.ok_count == 1
         assert summary.unreachable_count == 1
         assert summary.not_processed_count == 2
-        assert (output_dir / "first-ok.json").exists()
-        assert (output_dir / "blocked-candidate.json").exists()
-        assert not (output_dir / "third-skipped.json").exists()
-        assert not (output_dir / "fourth-skipped.json").exists()
+        assert (output_dir / "profiles" / "first-ok.json").exists()
+        assert (output_dir / "profiles" / "blocked-candidate.json").exists()
+        assert not (output_dir / "profiles" / "third-skipped.json").exists()
+        assert not (output_dir / "profiles" / "fourth-skipped.json").exists()
 
         # The counts must cleanly add up to total valid rows
         assert (
@@ -188,13 +189,13 @@ class TestWalkingSkeleton:
         f1 = FakeFetcher()
         summary1 = run_pipeline(config, f1, sleep_fn=lambda _: None)
         assert summary1.ok_count == 1
-        assert (output_dir / "repeat-user.json").exists()
+        assert (output_dir / "profiles" / "repeat-user.json").exists()
 
         # Run 2
         f2 = FakeFetcher()
         summary2 = run_pipeline(config, f2, sleep_fn=lambda _: None)
         assert summary2.ok_count == 1
-        assert (output_dir / "repeat-user.json").exists()
+        assert (output_dir / "profiles" / "repeat-user.json").exists()
 
     def test_cli_execution(self, tmp_path: Path) -> None:
         """Verify executing pipeline via CLI main entrypoint."""
@@ -219,5 +220,5 @@ class TestWalkingSkeleton:
             ]
         )
         assert ret == 0
-        assert (output_dir / "cli-user.json").exists()
+        assert (output_dir / "profiles" / "cli-user.json").exists()
         assert (output_dir / "run_summary.json").exists()

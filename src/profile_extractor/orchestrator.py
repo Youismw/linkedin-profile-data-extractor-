@@ -92,6 +92,7 @@ def run_pipeline(
 
     num_valid = len(valid_rows)
     stop_triggered = False
+    profiles_dir = config.output_dir / "profiles"
 
     try:
         for idx, row in enumerate(valid_rows):
@@ -121,7 +122,7 @@ def run_pipeline(
                         status=Status.OK,
                         important_fields=config.important_fields,
                     )
-                    write_profile_json(doc, config.output_dir)
+                    write_profile_json(doc, profiles_dir)
 
                     if doc.meta.status == Status.OK:
                         ok_count += 1
@@ -166,7 +167,7 @@ def run_pipeline(
                         important_fields=config.important_fields,
                         reason=reason.value,
                     )
-                    write_profile_json(doc, config.output_dir)
+                    write_profile_json(doc, profiles_dir)
                     logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
 
                     if config.stop_on_block and reason == Reason.BLOCKED:
@@ -204,7 +205,7 @@ def run_pipeline(
                     important_fields=config.important_fields,
                     reason=reason.value,
                 )
-                write_profile_json(doc, config.output_dir)
+                write_profile_json(doc, profiles_dir)
 
             # Apply polite pacing delay only between profiles, never after the final profile
             if idx < num_valid - 1 and not stop_triggered:
