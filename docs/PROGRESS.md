@@ -2,7 +2,7 @@
 
 ## Phase Summary
 - [x] Phase 0: Scaffold
-- [ ] Phase 1: Contracts
+- [x] Phase 1: Contracts
 - [ ] Phase 2: URLs and Input Reader
 - [ ] Phase 3: Writer
 - [ ] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
@@ -23,5 +23,18 @@
   - Created `config.example.toml`, `.gitignore`, `README.md`, `docs/ARCHITECTURE.md`, `docs/HANDOVER.md`, and `docs/PROGRESS.md`.
   - Scaffolded source directory `src/profile_extractor` and test suite `tests/`.
   - Phase 0 Acceptance Gate passed (`pytest`, `ruff check`, `pyright`, `python -m profile_extractor --help`).
+- **Skipped**: None.
+- **Open Issues**: None.
+
+---
+
+## Phase 1: Contracts
+- **Status**: Completed
+- **Done**:
+  - Created `src/profile_extractor/models.py` with Pydantic v2 models: `Status`, `Reason`, `ExperienceItem`, `EducationItem`, `OtherSection`, `Profile`, `Meta`, `ProfileDocument`, `FetchResult`, `UnreachableRecord`, and `RunSummary`.
+  - Created `src/profile_extractor/config.py` with TOML parser, defaults, bounds checking, and validation.
+  - Created `src/profile_extractor/logging_setup.py` ensuring personal data is never printed or sent to logs.
+  - Added comprehensive test suite `tests/test_contracts.py` covering model round-tripping, unreachable contracts (empty profile dict and list), and config validation errors.
+  - Phase 1 Acceptance Gate passed (8 tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.
