@@ -35,7 +35,7 @@ class TestDetection:
             "<html><body><div>Sign in to view full profile</div>"
             "<button>Join LinkedIn</button></body></html>"
         )
-        status, reason, detail = detect_outcome(url, html)
+        status, reason, _ = detect_outcome(url, html)
         assert status == Status.UNREACHABLE
         assert reason == Reason.NOT_VISIBLE
 

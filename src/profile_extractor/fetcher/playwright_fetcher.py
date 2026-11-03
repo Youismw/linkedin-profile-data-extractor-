@@ -26,6 +26,7 @@ from playwright.sync_api import (
 )
 
 from profile_extractor.fetcher.detection import detect_outcome
+from profile_extractor.fetcher.login import run_interactive_login
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import FetchResult, Reason, Status
 from profile_extractor.urls import extract_slug, sanitize_slug
@@ -169,7 +170,6 @@ class PlaywrightFetcher:
                     print("[!] LinkedIn session has expired or requires re-authentication.")
                     print("    Opening LinkedIn login window now. Please sign in to resume...")
                     print("=" * 70 + "\n")
-                    from profile_extractor.fetcher.login import run_interactive_login
 
                     run_interactive_login(self.auth_state_path)
                     self.close()

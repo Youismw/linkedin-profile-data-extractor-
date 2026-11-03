@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from profile_extractor.fetcher.login import is_session_expired
 from profile_extractor.fetcher.playwright_fetcher import PlaywrightFetcher
 from profile_extractor.models import Reason, Status
 
@@ -34,7 +35,7 @@ class TestPlaywrightFetcher:
             def close(self) -> None:
                 pass
 
-        monkeypatch.setattr(fetcher, "_ensure_browser", lambda: MockContext())
+        monkeypatch.setattr(fetcher, "_ensure_browser", MockContext)
 
         try:
             res = fetcher.fetch("https://www.linkedin.com/in/timeout-profile/")
@@ -90,8 +91,6 @@ class TestPlaywrightFetcher:
 
     def test_is_session_expired(self, tmp_path: Path) -> None:
         """Verify is_session_expired accurately detects missing, expired, and valid states."""
-        from profile_extractor.fetcher.login import is_session_expired
-
         # 1. Nonexistent file
         assert is_session_expired(tmp_path / "missing.json") is True
         assert is_session_expired(None) is True

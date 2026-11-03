@@ -10,12 +10,19 @@ Features:
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from profile_extractor.config import load_config
-from profile_extractor.fetcher import FakeFetcher, PlaywrightFetcher, run_interactive_login
+from profile_extractor.fetcher import (
+    FakeFetcher,
+    PlaywrightFetcher,
+    is_session_expired,
+    run_interactive_login,
+)
 from profile_extractor.logging_setup import setup_logging
 from profile_extractor.orchestrator import run_pipeline
 
@@ -230,8 +237,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.fake:
             fetcher = FakeFetcher()
         else:
-            from profile_extractor.fetcher.login import is_session_expired
-
             # Proactive session check: opens login window if cookies expired
             if is_session_expired(config.auth_state_path):
                 if sys.stdin and sys.stdin.isatty():
@@ -271,20 +276,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if profiles_dir.is_dir()
                     else config.output_dir.resolve()
                 )
+                abs_output.mkdir(parents=True, exist_ok=True)
                 print(f"Opening output folder: {abs_output}")
                 if sys.platform == "win32":
                     opened = False
                     try:
-                        import os
-
                         os.startfile(str(abs_output))
                         opened = True
                     except Exception:
                         pass
                     if not opened:
                         try:
-                            import subprocess
-
                             subprocess.Popen(f'explorer "{abs_output}"', shell=True)
                         except Exception:
                             pass

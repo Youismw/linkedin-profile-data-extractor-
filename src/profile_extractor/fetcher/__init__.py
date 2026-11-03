@@ -74,10 +74,10 @@ class FakeFetcher:
 
 
 __all__ = [
-    "Fetcher",
     "FakeFetcher",
-    "PlaywrightFetcher",
     "FetchResult",
+    "Fetcher",
+    "PlaywrightFetcher",
     "detect_outcome",
     "is_session_expired",
     "run_interactive_login",
