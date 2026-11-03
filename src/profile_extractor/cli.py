@@ -125,8 +125,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     input_path = desktop_fallback
             overrides["input_file"] = input_path
         else:
+            desktop_profile = Path.home() / "Desktop" / "profiles.xlsx"
             default_input = Path("input/profiles.xlsx")
-            if not default_input.is_file():
+            if desktop_profile.is_file() and (
+                not default_input.is_file()
+                or desktop_profile.stat().st_mtime > default_input.stat().st_mtime
+            ):
+                overrides["input_file"] = desktop_profile
+            elif default_input.is_file():
+                overrides["input_file"] = default_input
+            else:
                 input_dir = Path("input")
                 if input_dir.is_dir():
                     xlsx_files = list(input_dir.glob("*.xlsx"))
@@ -181,16 +189,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             # Automatically pop open the output folder in Windows File Explorer
             try:
-                abs_output = config.output_dir.resolve()
+                profiles_dir = config.output_dir / "profiles"
+                abs_output = (
+                    profiles_dir.resolve()
+                    if profiles_dir.is_dir()
+                    else config.output_dir.resolve()
+                )
+                print(f"Opening output folder: {abs_output}")
                 if sys.platform == "win32":
                     try:
                         import os
 
                         os.startfile(str(abs_output))
                     except Exception:
+                        pass
+                    try:
                         import subprocess
 
-                        subprocess.Popen(["explorer.exe", str(abs_output)])
+                        subprocess.Popen(f'explorer "{abs_output}"', shell=True)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
