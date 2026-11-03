@@ -84,6 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the profile_extractor CLI."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # Default to 'run' subcommand if not specified
+    if not argv or (argv[0] not in ["run", "login", "-h", "--help"]):
+        argv = ["run", *argv]
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -107,17 +114,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if input_choice:
             input_path = Path(input_choice)
-            if not input_path.is_file():
+            if input_path.is_dir():
+                xlsx_files = list(input_path.glob("*.xlsx"))
+                if xlsx_files:
+                    input_path = xlsx_files[0]
+            elif not input_path.is_file():
                 # Check Desktop as convenient fallback
                 desktop_fallback = Path.home() / "Desktop" / input_path.name
                 if desktop_fallback.is_file():
                     input_path = desktop_fallback
             overrides["input_file"] = input_path
         else:
-            # Fallback: if default input/profiles.xlsx is missing, try demo_profiles.xlsx
             default_input = Path("input/profiles.xlsx")
-            if not default_input.is_file() and Path("input/demo_profiles.xlsx").is_file():
-                overrides["input_file"] = Path("input/demo_profiles.xlsx")
+            if not default_input.is_file():
+                input_dir = Path("input")
+                if input_dir.is_dir():
+                    xlsx_files = list(input_dir.glob("*.xlsx"))
+                    if xlsx_files:
+                        overrides["input_file"] = xlsx_files[0]
 
         if output_choice:
             overrides["output_dir"] = Path(output_choice)
@@ -134,13 +148,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.fake:
             fetcher = FakeFetcher()
         else:
-            if not config.auth_state_path.is_file():
-                print(
-                    f"Error: Authentication session not found at '{config.auth_state_path}'.\n"
-                    "Please run 'profile_extractor login' first, or use '--fake' for testing.",
-                    file=sys.stderr,
-                )
-                return 1
+            from profile_extractor.fetcher.login import is_session_expired
+
+            if is_session_expired(config.auth_state_path):
+                if sys.stdin and sys.stdin.isatty():
+                    print("\n" + "=" * 70)
+                    print("[!] LinkedIn session not found or has expired.")
+                    print("    Opening LinkedIn login window now. Please sign in...")
+                    print("=" * 70 + "\n")
+                    run_interactive_login(config.auth_state_path)
+                else:
+                    print(
+                        f"Error: Session missing/expired at '{config.auth_state_path}'.",
+                        file=sys.stderr,
+                    )
+                    return 1
 
             fetcher = PlaywrightFetcher(
                 auth_state_path=config.auth_state_path,

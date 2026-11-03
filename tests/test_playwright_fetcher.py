@@ -88,6 +88,35 @@ class TestPlaywrightFetcher:
         finally:
             fetcher.close()
 
+    def test_is_session_expired(self, tmp_path: Path) -> None:
+        """Verify is_session_expired accurately detects missing, expired, and valid states."""
+        from profile_extractor.fetcher.login import is_session_expired
+
+        # 1. Nonexistent file
+        assert is_session_expired(tmp_path / "missing.json") is True
+        assert is_session_expired(None) is True
+
+        # 2. File with no cookies
+        no_cookies = tmp_path / "empty.json"
+        no_cookies.write_text('{"cookies": []}', encoding="utf-8")
+        assert is_session_expired(no_cookies) is True
+
+        # 3. File with expired li_at cookie
+        expired_file = tmp_path / "expired.json"
+        expired_file.write_text(
+            '{"cookies": [{"name": "li_at", "expires": 100000}]}',
+            encoding="utf-8",
+        )
+        assert is_session_expired(expired_file) is True
+
+        # 4. File with valid future li_at cookie
+        valid_file = tmp_path / "valid.json"
+        valid_file.write_text(
+            '{"cookies": [{"name": "li_at", "expires": 9999999999}]}',
+            encoding="utf-8",
+        )
+        assert is_session_expired(valid_file) is False
+
     @pytest.mark.live
     def test_live_smoke_test(self) -> None:
         """Live smoke test returning HTML containing the consenting employee's name.

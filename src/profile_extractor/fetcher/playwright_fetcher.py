@@ -1,5 +1,6 @@
 """Playwright-based fetcher utilizing stored session state and incremental scrolling."""
 
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,6 +31,7 @@ class PlaywrightFetcher:
         save_raw_html_dir: Path | str | None = None,
         max_scroll_steps: int = 15,
         scroll_step_delay_ms: int = 400,
+        interactive_relogin: bool = True,
     ) -> None:
         self.auth_state_path = Path(auth_state_path) if auth_state_path else None
         self.headless = headless
@@ -37,6 +39,8 @@ class PlaywrightFetcher:
         self.save_raw_html_dir = Path(save_raw_html_dir) if save_raw_html_dir else None
         self.max_scroll_steps = max_scroll_steps
         self.scroll_step_delay_ms = scroll_step_delay_ms
+        self.interactive_relogin = interactive_relogin
+        self._allow_relogin = True
 
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -115,6 +119,27 @@ class PlaywrightFetcher:
                     html=html,
                     status_code=status_code,
                 )
+
+                # If session has expired (authwall detected), prompt to relogin and retry
+                if (
+                    status == Status.UNREACHABLE
+                    and reason == Reason.NOT_VISIBLE
+                    and self._allow_relogin
+                    and self.interactive_relogin
+                    and self.auth_state_path
+                    and sys.stdin
+                    and sys.stdin.isatty()
+                ):
+                    print("\n" + "=" * 70)
+                    print("[!] LinkedIn session has expired or requires re-authentication.")
+                    print("    Opening LinkedIn login window now. Please sign in to resume...")
+                    print("=" * 70 + "\n")
+                    from profile_extractor.fetcher.login import run_interactive_login
+
+                    run_interactive_login(self.auth_state_path)
+                    self.close()
+                    self._allow_relogin = False
+                    return self.fetch(url)
 
                 # Optional debug dumping of raw HTML (fixtures creation)
                 if self.save_raw_html_dir:
