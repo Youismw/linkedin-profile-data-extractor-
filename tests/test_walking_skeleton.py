@@ -254,11 +254,22 @@ class TestWalkingSkeleton:
         stale_file.write_text("{}", encoding="utf-8")
         assert stale_file.is_file()
 
-        # 2. Run with NO positional input or output arguments (should remember paths and wipe stale)
+        # 2. Run with NO positional input or output arguments
+        # (should remember paths and preserve existing profiles by default)
         ret2 = main(["run", "--fake"])
         assert ret2 == 0
         assert (output_dir / "profiles" / "persisted-user.json").exists()
-        assert not stale_file.exists(), "Stale profile from prior run must be cleaned"
+        assert stale_file.exists(), (
+            "By default, stale profile must NOT be deleted without --prune-stale"
+        )
+
+        # 3. Run with --prune-stale flag to explicitly opt into pruning
+        ret3 = main(["run", "--fake", "--prune-stale"])
+        assert ret3 == 0
+        assert (output_dir / "profiles" / "persisted-user.json").exists()
+        assert not stale_file.exists(), (
+            "Stale profile must be cleaned when --prune-stale is specified"
+        )
 
     def test_cli_output_only_intent_detection(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

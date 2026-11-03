@@ -157,11 +157,29 @@
   - **Top Card Refinement**: Filtered out candidate pronouns (`He/Him`, `She/Her`, etc.) and `--` empty placeholders from being misidentified as professional headlines.
   - **Single Windows Explorer Popup**: Guarded folder pop-up with an `opened` state flag so `os.startfile` and `explorer.exe` fallback never spawn duplicate folder instances.
   - **Path Memory & Persistence**: Implemented `.run_state.json` storage in `cli.py` to remember custom input spreadsheets and output directories across runs, eliminating the need to re-type paths.
-  - **Stale File Prevention**: Automatically purges stale `.json` files from prior runs at the start of each execution, and sorts input directory spreadsheets by newest modification timestamp to guarantee only fresh, active data is processed.
-  - **Raw Text Dump**: Added unedited full-profile visible text dump under `"raw_text"` at the end of each JSON profile document.
+  - **Safe Stale File Cleanup**: Replaced automatic startup file deletion with opt-in `--prune-stale` running only after a full, successful batch to guarantee prior extractions are never wiped.
+  - **Raw Text Dump**: Added visible text dump under `"raw_text"` at the end of each JSON profile document, capturing candidate content while stripping non-content noise (scripts, stylesheets, modals, footers).
   - **Auto-Relogin Flow**: Integrated proactive cookie expiration checks and reactive authwall recovery directly into `PlaywrightFetcher` and `cli.py`.
   - **Directory Isolation**: Stored all generated profile JSONs inside `output/profiles/<slug>.json`, keeping root `output/` clean for `run_summary.json` and reports.
-- **Verification**: Verified on real profiles (`rohit-chauhan-464b15262`, `gaurav-akoliya-aa8a3636a`, `sundarpichai`, and batch of 8 candidates). All 44 unit tests, `ruff check .`, and `pyright src tests` pass with 0 errors.
+- **Verification**: Verified on real profiles (`rohit-chauhan-464b15262`, `gaurav-akoliya-aa8a3636a`, `sundarpichai`, and batch of 8 candidates).
+
+---
+
+## Phase 9: Static Review Remediation & Pipeline Hardening
+- **Status**: Completed
+- **Done**:
+  - **Item 1 (Destructive Cleanup)**: Made stale profile pruning strictly opt-in via `--prune-stale` (default `False`). Guaranteed it never executes if valid profiles count is zero or if a run was interrupted/capped.
+  - **Item 2 (Slug Sanitization & Filename Collision)**: Implemented `profile_filename_stem()` as single canonical truth. Added deterministic SHA256 collision hashing for colliding sanitized stems.
+  - **Item 3 (CLI Config Precedence)**: Loaded `config.toml` before path resolution with deterministic 4-tier precedence: CLI args > `.run_state.json` > `config.toml` > defaults.
+  - **Item 4 (Deep-Page Circuit Breaker)**: Subpage fetches (`/details/skills/`, etc.) now pass through status check and trigger circuit breaker on `BLOCKED` outcomes.
+  - **Item 5 (Summary Accounting Reconciliation)**: Capped rows from `max_profiles` are counted under `skipped_by_limit` and added to `not_processed_count`.
+  - **Item 6 (HTTP Status Code Classification)**: Explicit classification in `detect_outcome()` for 401, 403, 404, 410, 429, 999, 5xx, and other 4xx codes.
+  - **Item 7 (Error Page Rejection)**: Added rejection pattern in `parser.py` for generic error headings (`500 Internal Server Error`, etc.) and mandated profile signals before marking `Status.OK`.
+  - **Item 8 (Dual-Container Scroll Tracking)**: Evaluated scroll movements across both `window` and `main` elements to prevent premature exit on lazy-loaded layouts.
+  - **Item 9 (Worksheet Ranking Heuristic)**: Worksheet selector scores actual valid LinkedIn URL counts instead of naive `"data"` substring match.
+  - **Item 10 (URL Normalization Case & Encoding)**: Handled uppercase schemes (`HTTPS://`) and encoded slashes (`%2F` replaced with `-`).
+  - Added dedicated test suite `tests/test_review_defects.py` covering all 10 items.
+- **Verification**: All 73 tests passing (`pytest -m "not live"`), `mypy src tests` passing (0 errors across 28 files), `ruff check .` passing (0 errors).
 
 ---
 
@@ -172,7 +190,7 @@
 - [x] Unreachable profiles marked in JSON and listed in `unreachable_profiles.xlsx`
 - [x] `run_summary.json` accounts for every row (the counts add up mathematically)
 - [x] No hardcoded profile count; works for 1 row and 1000 rows
-- [x] Tests, lint, and type checks pass (42 tests, 0 ruff errors, 0 pyright errors)
-- [x] No personal data in logs or in the repository
+- [x] Tests, lint, and type checks pass (73 tests, 0 ruff errors, 0 pyright errors, 0 mypy errors)
+- [x] No personal profile data in logs or in the repository; operational logs record only URLs and slugs
 - [x] `README.md`, `docs/ARCHITECTURE.md`, and `docs/HANDOVER.md` complete, with limitations stated honestly
 - [x] Demo rehearsed once, including the fallback mode

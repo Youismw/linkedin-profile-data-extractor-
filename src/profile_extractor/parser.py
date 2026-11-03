@@ -51,6 +51,12 @@ from profile_extractor.parser_rules import (
     STRIP_TAGS,
 )
 
+GENERIC_ERROR_HEADING_PATTERN = re.compile(
+    r"^(internal server error|server error|error|404|500|502|503|"
+    r"access denied|forbidden|page not found|service unavailable)\b",
+    re.IGNORECASE,
+)
+
 
 def _clean_text(text: str | None) -> str:
     """Normalize whitespace in extracted strings (collapsing multiple spaces and newlines)."""
@@ -508,11 +514,13 @@ def parse_profile(
             continue
         valid_sections.append(sec)
 
-    # Strategy A: Check <h1> tags
+    # Strategy A: Check <h1> tags (rejecting generic error page headings)
     h1 = soup.find("h1")
     if h1 and _clean_text(h1.get_text(separator=" ")):
-        name = _clean_text(h1.get_text(separator=" "))
-        top_card = h1.find_parent("section")
+        cand_name = _clean_text(h1.get_text(separator=" "))
+        if not GENERIC_ERROR_HEADING_PATTERN.search(cand_name):
+            name = cand_name
+            top_card = h1.find_parent("section")
 
     # Strategy B: First valid section in <main> (LinkedIn logged-in profile top card)
     if not top_card and valid_sections:
@@ -528,7 +536,9 @@ def parse_profile(
         ]
 
         if not name and filtered:
-            name = filtered[0]
+            cand_name = filtered[0]
+            if not GENERIC_ERROR_HEADING_PATTERN.search(cand_name):
+                name = cand_name
 
         if name and filtered:
             try:
@@ -593,11 +603,11 @@ def parse_profile(
     # Strategy C: Title tag fallback ("Name | LinkedIn")
     if not name and soup.title and soup.title.string:
         raw_title = soup.title.string.strip()
-        cand_name: str | None = None
+        title_cand_name: str | None = None
         if " | " in raw_title:
-            cand_name = _clean_text(raw_title.split(" | ")[0])
+            title_cand_name = _clean_text(raw_title.split(" | ")[0])
         elif " - " in raw_title:
-            cand_name = _clean_text(raw_title.split(" - ")[0])
+            title_cand_name = _clean_text(raw_title.split(" - ")[0])
 
         generic_titles = {
             "sign up",
@@ -613,11 +623,11 @@ def parse_profile(
         }
         utility_kws = ["sign up", "log in", "page not found", "security verification"]
         if (
-            cand_name
-            and cand_name.lower() not in generic_titles
-            and not any(kw in cand_name.lower() for kw in utility_kws)
+            title_cand_name
+            and title_cand_name.lower() not in generic_titles
+            and not any(kw in title_cand_name.lower() for kw in utility_kws)
         ):
-            name = cand_name
+            name = title_cand_name
 
     # Gate requirement: return parse_failed if no name and headline can be found
     if not name and not headline:
@@ -782,12 +792,27 @@ def parse_profile(
                 slug,
             )
 
+    has_profile_signals = bool(
+        name
+        or headline
+        or location
+        or about
+        or experience
+        or education
+        or skills
+    )
+    final_status: Status = status
+    final_reason: Reason | None = Reason(reason) if reason else None
+    if status == Status.OK and not has_profile_signals:
+        final_status = Status.UNREACHABLE
+        final_reason = Reason.PARSE_FAILED
+
     return ProfileDocument(
         meta=Meta(
             source_url=source_url,
             slug=slug,
-            status=Status.OK,
-            reason=None,
+            status=final_status,
+            reason=final_reason,
             missing_fields=missing_fields,
         ),
         profile=profile,

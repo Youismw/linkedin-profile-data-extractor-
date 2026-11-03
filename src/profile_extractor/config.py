@@ -55,6 +55,7 @@ class ExtractorConfig(BaseModel):
     max_profiles: int | None = Field(default=None)
     headless: bool = Field(default=True)
     deep_details: bool = Field(default=True)
+    prune_stale: bool = Field(default=False)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")
 
@@ -98,6 +99,25 @@ class ExtractorConfig(BaseModel):
         return self
 
 
+def read_config_file(config_path: Path | str | None = None) -> dict[str, Any]:
+    """Return raw key/values from the TOML config file (explicit path or ./config.toml).
+
+    Returns an empty dict when no default config.toml exists. Raises FileNotFoundError
+    if an explicitly requested config file is missing.
+    """
+    if config_path:
+        path = Path(config_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Configuration file not found: {path}")
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    default_file = Path("config.toml")
+    if default_file.is_file():
+        with default_file.open("rb") as f:
+            return tomllib.load(f)
+    return {}
+
+
 def load_config(
     config_path: Path | str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -109,20 +129,8 @@ def load_config(
     2. config.toml file on disk (if present or explicitly passed).
     3. Programmatic CLI overrides dictionary (takes top precedence).
     """
-    data: dict[str, Any] = {}
-
     # 1. Load from explicit path or default 'config.toml'
-    if config_path:
-        path = Path(config_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"Configuration file not found: {path}")
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-    else:
-        default_file = Path("config.toml")
-        if default_file.is_file():
-            with default_file.open("rb") as f:
-                data = tomllib.load(f)
+    data: dict[str, Any] = dict(read_config_file(config_path))
 
     # 2. Apply runtime CLI overrides
     if overrides:

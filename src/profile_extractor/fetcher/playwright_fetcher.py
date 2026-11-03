@@ -125,13 +125,23 @@ class PlaywrightFetcher:
                         const m = document.querySelector('main')
                             || document.scrollingElement
                             || document.documentElement;
-                        const prevScrollTop = m.scrollTop;
+                        const prevM = m.scrollTop;
+                        const prevWin = window.scrollY || window.pageYOffset || 0;
+
                         m.scrollTop += 600;
                         window.scrollBy(0, 600);
-                        return {
-                            moved: m.scrollTop > prevScrollTop,
-                            atBottom: (m.scrollTop + m.clientHeight + 50) >= m.scrollHeight
-                        };
+
+                        const currWin = window.scrollY || window.pageYOffset || 0;
+                        const winScrollHeight = Math.max(
+                            document.documentElement.scrollHeight,
+                            document.body ? document.body.scrollHeight : 0
+                        );
+                        const winBottom = (window.innerHeight + currWin + 50) >= winScrollHeight;
+                        const mBottom = (m.scrollTop + m.clientHeight + 50) >= m.scrollHeight;
+
+                        const moved = (m.scrollTop > prevM) || (currWin > prevWin);
+                        const atBottom = mBottom && winBottom;
+                        return { moved, atBottom };
                     }""")
                     page.wait_for_timeout(self.scroll_step_delay_ms)
                     if isinstance(scroll_info, dict):

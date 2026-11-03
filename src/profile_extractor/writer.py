@@ -83,10 +83,19 @@ def _atomic_write_text(target_path: Path, content: str) -> None:
         raise
 
 
-def write_profile_json(document: ProfileDocument, output_dir: Path | str) -> Path:
+def profile_filename_stem(slug: str, source_url: str = "") -> str:
+    """Canonical filename stem for a profile slug (single source of truth)."""
+    return sanitize_slug(slug, fallback_seed=source_url)
+
+
+def write_profile_json(
+    document: ProfileDocument,
+    output_dir: Path | str,
+    filename_stem: str | None = None,
+) -> Path:
     """Write a profile document to JSON atomically.
 
-    File is saved as <slug>.json in the given output directory.
+    File is saved as <filename_stem>.json (default: canonical sanitized slug).
     Uses UTF-8 encoding with ensure_ascii=False to preserve international names.
 
     Returns:
@@ -94,7 +103,9 @@ def write_profile_json(document: ProfileDocument, output_dir: Path | str) -> Pat
     """
     out_dir = Path(output_dir)
     # Sanitize slug so special characters never cause directory traversal or illegal paths
-    clean_slug = sanitize_slug(document.meta.slug, fallback_seed=document.meta.source_url)
+    clean_slug = filename_stem or profile_filename_stem(
+        document.meta.slug, document.meta.source_url
+    )
     target_path = out_dir / f"{clean_slug}.json"
 
     # Serialize using contract model method

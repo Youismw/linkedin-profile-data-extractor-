@@ -28,6 +28,13 @@ max_profiles = 0
 # Playwright browser mode
 headless = true
 
+# Deep details crawling: fetch full skills, experience, and education subpages
+deep_details = true
+
+# Stale file pruning: when true, removes JSON files not present in current input workbook.
+# Destructive cleanup is disabled by default to prevent accidental data loss.
+prune_stale = false
+
 # Stop the run immediately when a block/challenge is encountered
 stop_on_block = true
 

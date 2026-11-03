@@ -14,6 +14,7 @@ This module coordinates the entire workflow:
 7. Safe Teardown: Always releases browser resources via `fetcher.close()` in a `finally` block.
 """
 
+import hashlib
 import random
 import re
 import time
@@ -38,6 +39,7 @@ from profile_extractor.parser import (
 )
 from profile_extractor.reader import read_profile_urls
 from profile_extractor.writer import (
+    profile_filename_stem,
     write_profile_json,
     write_run_summary,
     write_unreachable_report,
@@ -76,7 +78,9 @@ def run_pipeline(
 
     all_rows = read_result.rows
 
-    # Apply max_profiles limit if configured
+    # Apply max_profiles limit if configured; rows beyond the cap are counted
+    # explicitly as not processed so the summary always reconciles.
+    skipped_by_limit = 0
     if config.max_profiles and config.max_profiles > 0:
         valid_count = 0
         capped_rows = []
@@ -85,6 +89,8 @@ def run_pipeline(
                 if valid_count < config.max_profiles:
                     capped_rows.append(r)
                     valid_count += 1
+                else:
+                    skipped_by_limit += 1
             else:
                 capped_rows.append(r)
         candidate_rows = capped_rows
@@ -97,8 +103,31 @@ def run_pipeline(
     ok_count = 0
     unreachable_count = 0
     unreachable_by_reason: dict[str, int] = {}
-    not_processed_count = 0
+    not_processed_count = skipped_by_limit
+    if skipped_by_limit:
+        logger.info(
+            "%d valid row(s) not processed due to max_profiles=%d",
+            skipped_by_limit,
+            config.max_profiles,
+        )
     unreachable_records: list[UnreachableRecord] = []
+
+    # Assign one canonical, collision-free filename per valid row. The same stem is
+    # used for writing and for stale-file reconciliation.
+    filename_stems: dict[int, str] = {}
+    used_stems: set[str] = set()
+    for r in valid_rows:
+        stem = profile_filename_stem(r.slug or "", r.normalized or "")
+        if stem.lower() in used_stems:
+            digest = hashlib.sha256((r.slug or "").encode("utf-8")).hexdigest()[:8]
+            stem = f"{stem}-{digest}"
+            logger.warning(
+                "Row %d: filename collision after sanitizing; saving as %s.json",
+                r.row_number,
+                stem,
+            )
+        used_stems.add(stem.lower())
+        filename_stems[r.row_number] = stem
 
     # --------------------------------------------------------------------------
     # 2. Record Malformed / Invalid URLs Immediately
@@ -134,6 +163,7 @@ def run_pipeline(
     # 4. Processing Loop Across Valid Candidate Rows
     # --------------------------------------------------------------------------
     interrupted = False
+    completed_rows = 0
     try:
         for idx, row in enumerate(valid_rows):
             # If circuit breaker was triggered by a bot challenge, skip remaining rows
@@ -166,108 +196,93 @@ def run_pipeline(
                         important_fields=config.important_fields,
                     )
 
-                    # Deep crawling of sub-pages (Show all skills, education, experience)
+                    # Deep crawling of sub-pages (Show all skills, education, experience).
+                    # Every sub-page fetch goes through the same block policy as the main
+                    # profile fetch and is paced with the same polite delay.
                     if getattr(config, "deep_details", True) and fetch_res.html:
-                        # 1. Unroll Skills
-                        has_more_skills = bool(
-                            re.search(r"/details/skills/", fetch_res.html)
-                            or re.search(r"show all\s*(?:\d+)?\s*skills", fetch_res.html, re.I)
-                            or re.search(r"skills\s*\(\d+\)", fetch_res.html, re.I)
-                        )
-                        if has_more_skills:
-                            skills_url = f"https://www.linkedin.com/in/{slug}/details/skills/"
+                        main_html = fetch_res.html
+                        detail_specs = [
+                            (
+                                "skills",
+                                [r"/details/skills/", r"show all\s*(?:\d+)?\s*skills",
+                                 r"skills\s*\(\d+\)"],
+                                parse_skills_details,
+                            ),
+                            (
+                                "education",
+                                [r"/details/education/", r"show all\s*(?:\d+)?\s*education"],
+                                parse_education_details,
+                            ),
+                            (
+                                "experience",
+                                [r"/details/experience/", r"show all\s*(?:\d+)?\s*experience"],
+                                parse_experience_details,
+                            ),
+                        ]
+                        for section, patterns, parse_fn in detail_specs:
+                            if stop_triggered:
+                                break
+                            if not any(re.search(pat, main_html, re.I) for pat in patterns):
+                                continue
+                            detail_url = f"https://www.linkedin.com/in/{slug}/details/{section}/"
+                            sleep_fn(
+                                random.uniform(config.delay_seconds_min, config.delay_seconds_max)
+                            )
                             logger.info(
-                                "Row %d: unrolling full skills list from %s",
+                                "Row %d: unrolling full %s list from %s",
                                 row.row_number,
-                                skills_url,
+                                section,
+                                detail_url,
                             )
                             try:
-                                skills_res = fetcher.fetch(skills_url)
-                                if skills_res.status == Status.OK and skills_res.html:
-                                    deep_skills = parse_skills_details(skills_res.html)
-                                    if deep_skills and len(deep_skills) > len(
-                                        doc.profile.skills or []
-                                    ):
-                                        logger.info(
-                                            "Row %d: unrolled %d total skills (was %d)",
-                                            row.row_number,
-                                            len(deep_skills),
-                                            len(doc.profile.skills or []),
-                                        )
-                                        doc.profile.skills = deep_skills
-                            except Exception as skills_err:
+                                detail_res = fetcher.fetch(detail_url)
+                            except KeyboardInterrupt:
+                                raise
+                            except Exception as detail_err:
                                 logger.warning(
-                                    "Row %d: could not fetch skills subpage: %s",
+                                    "Row %d: could not fetch %s subpage: %s",
                                     row.row_number,
-                                    skills_err,
+                                    section,
+                                    detail_err,
                                 )
-
-                        # 2. Unroll Education
-                        has_more_edu = bool(
-                            re.search(r"/details/education/", fetch_res.html)
-                            or re.search(r"show all\s*(?:\d+)?\s*education", fetch_res.html, re.I)
-                        )
-                        if has_more_edu:
-                            edu_url = f"https://www.linkedin.com/in/{slug}/details/education/"
-                            logger.info(
-                                "Row %d: unrolling full education list from %s",
-                                row.row_number,
-                                edu_url,
+                                continue
+                            if detail_res.status != Status.OK:
+                                logger.warning(
+                                    "Row %d: %s subpage unreachable (%s)",
+                                    row.row_number,
+                                    section,
+                                    detail_res.reason.value if detail_res.reason else "unknown",
+                                )
+                                if config.stop_on_block and detail_res.reason == Reason.BLOCKED:
+                                    logger.warning(
+                                        "Row %d: Block detected on %s subpage! Halting run "
+                                        "as stop_on_block=True",
+                                        row.row_number,
+                                        section,
+                                    )
+                                    stop_triggered = True
+                                continue
+                            if not detail_res.html:
+                                continue
+                            deep_items = parse_fn(detail_res.html)
+                            current_items = getattr(doc.profile, section)
+                            current_count = (
+                                len(current_items)
+                                if isinstance(current_items, (list, tuple))
+                                else 0
                             )
-                            try:
-                                edu_res = fetcher.fetch(edu_url)
-                                if edu_res.status == Status.OK and edu_res.html:
-                                    deep_edu = parse_education_details(edu_res.html)
-                                    if deep_edu and len(deep_edu) > len(
-                                        doc.profile.education or []
-                                    ):
-                                        logger.info(
-                                            "Row %d: unrolled %d total education entries (was %d)",
-                                            row.row_number,
-                                            len(deep_edu),
-                                            len(doc.profile.education or []),
-                                        )
-                                        doc.profile.education = deep_edu
-                            except Exception as edu_err:
-                                logger.warning(
-                                    "Row %d: could not fetch education subpage: %s",
+                            if (
+                                isinstance(deep_items, (list, tuple))
+                                and len(deep_items) > current_count
+                            ):
+                                logger.info(
+                                    "Row %d: unrolled %d total %s (was %d)",
                                     row.row_number,
-                                    edu_err,
+                                    len(deep_items),
+                                    section,
+                                    current_count,
                                 )
-
-                        # 3. Unroll Experience
-                        has_more_exp = bool(
-                            re.search(r"/details/experience/", fetch_res.html)
-                            or re.search(r"show all\s*(?:\d+)?\s*experience", fetch_res.html, re.I)
-                        )
-                        if has_more_exp:
-                            exp_url = f"https://www.linkedin.com/in/{slug}/details/experience/"
-                            logger.info(
-                                "Row %d: unrolling full experience list from %s",
-                                row.row_number,
-                                exp_url,
-                            )
-                            try:
-                                exp_res = fetcher.fetch(exp_url)
-                                if exp_res.status == Status.OK and exp_res.html:
-                                    deep_exp = parse_experience_details(exp_res.html)
-                                    if deep_exp and len(deep_exp) > len(
-                                        doc.profile.experience or []
-                                    ):
-                                        logger.info(
-                                            "Row %d: unrolled %d total experience entries (was %d)",
-                                            row.row_number,
-                                            len(deep_exp),
-                                            len(doc.profile.experience or []),
-                                        )
-                                        doc.profile.experience = deep_exp
-                            except Exception as exp_err:
-                                logger.warning(
-                                    "Row %d: could not fetch experience subpage: %s",
-                                    row.row_number,
-                                    exp_err,
-                                )
-
+                                setattr(doc.profile, section, deep_items)
                         # Recalculate missing fields after unrolling details
                         missing_fields = []
                         profile_data = doc.profile.model_dump(exclude_none=True)
@@ -277,7 +292,7 @@ def run_pipeline(
                                 missing_fields.append(field)
                         doc.meta.missing_fields = missing_fields
 
-                    write_profile_json(doc, profiles_dir)
+                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
 
                     if doc.meta.status == Status.OK:
                         ok_count += 1
@@ -325,7 +340,7 @@ def run_pipeline(
                         important_fields=config.important_fields,
                         reason=reason.value,
                     )
-                    write_profile_json(doc, profiles_dir)
+                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
                     logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
 
                     # Circuit breaker: halt immediately upon security checkpoint
@@ -363,7 +378,9 @@ def run_pipeline(
                     important_fields=config.important_fields,
                     reason=reason.value,
                 )
-                write_profile_json(doc, profiles_dir)
+                write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
+
+            completed_rows += 1
 
             # Polite pacing: random delay between min and max bounds (skip after last profile)
             if idx < num_valid - 1 and not stop_triggered:
@@ -373,7 +390,9 @@ def run_pipeline(
 
     except KeyboardInterrupt:
         interrupted = True
-        not_processed_count = num_valid - (ok_count + unreachable_count)
+        # Rows never completed (including the one in progress) are not processed;
+        # rows already counted as skipped after a block are not double-counted.
+        not_processed_count = skipped_by_limit + (num_valid - completed_rows)
         logger.warning(
             "\n[!] Execution interrupted (Ctrl+C). Preserving extracted profiles & reports..."
         )
@@ -382,17 +401,31 @@ def run_pipeline(
         fetcher.close()
 
     # --------------------------------------------------------------------------
-    # 5. Stale Profile Reconciliation & Audit Reports
+    # 5. Stale Profile Reconciliation (opt-in only) & Audit Reports
     # --------------------------------------------------------------------------
-    # Only remove files not in current spreadsheet AFTER an uninterrupted run completes
-    if not interrupted and not stop_triggered and (ok_count + unreachable_count >= num_valid):
-        valid_slugs = {row.slug for row in valid_rows if row.slug}
-        for existing_json in profiles_dir.glob("*.json"):
-            if existing_json.stem not in valid_slugs:
-                try:
-                    existing_json.unlink()
-                except OSError:
-                    pass
+    # Destructive cleanup never runs by default. With prune_stale enabled it runs only
+    # after an uninterrupted, unblocked run that processed at least one valid profile.
+    run_complete = (
+        not interrupted
+        and not stop_triggered
+        and num_valid > 0
+        and completed_rows == num_valid
+        and skipped_by_limit == 0
+    )
+    if getattr(config, "prune_stale", False):
+        if run_complete:
+            keep_stems = {stem.lower() for stem in filename_stems.values()}
+            for existing_json in profiles_dir.glob("*.json"):
+                if existing_json.stem.lower() not in keep_stems:
+                    try:
+                        existing_json.unlink()
+                        logger.info("Pruned stale profile file: %s", existing_json.name)
+                    except OSError:
+                        pass
+        else:
+            logger.warning(
+                "Skipping stale-file pruning: run was empty, interrupted, or stopped early."
+            )
 
     if unreachable_records:
         write_unreachable_report(unreachable_records, config.output_dir)

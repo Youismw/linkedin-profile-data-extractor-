@@ -15,8 +15,8 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 - **Data Contracts**: Writes one atomic, indented `<slug>.json` document per profile. Missing important fields are explicitly cataloged in `meta.missing_fields`.
 - **Fault-Tolerant Batching**: Failure on an individual profile never halts the entire batch.
 - **Unreachable Reporting**: Profiles that are inaccessible (`invalid_url`, `not_found`, `not_visible`, `blocked`, `timeout`, `parse_failed`, `unexpected_error`) generate an explicit record in `unreachable_profiles.xlsx`.
-- **Polite Execution**: Configurable random delays between requests and automatic cessation (`stop_on_block = true`) upon encountering challenges or warnings to protect accounts.
-- **Data Privacy by Design**: Personal profile data is strictly confined to the output directory—it is never printed to logs or committed to version control.
+- **Polite Execution**: Configurable random delays between requests (default 1.0–2.0s; fast mode 0.5–1.0s) and automatic cessation (`stop_on_block = true`) upon encountering challenges or warnings to protect accounts.
+- **Data Privacy & Operational Logging**: Candidate personal profiles (names, bios, contact details, work history, skills) are strictly confined to the output directory and never printed in logs or committed to version control. Operational logs record only row numbers, URLs, and slugs for diagnostic traceability.
 
 ---
 
@@ -24,15 +24,15 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 
 | Category | Tool / Library | Version | Core Purpose & Architecture Role |
 |---|---|---|---|
-| **Core Runtime** | **Python** | `>=3.11` (Tested on 3.12 / 3.14) | Core language runtime with modern union syntax (`X \| None`), pattern matching, and dataclasses. |
+| **Core Runtime** | **Python** | `>=3.13` (Tested on 3.13 / 3.14) | Core language runtime with modern union syntax (`X \| None`), pattern matching, and dataclasses. |
 | **Browser Automation** | **Playwright** | `1.57.0` | Chromium automation engine for rendering LinkedIn client-side SPAs and capturing authentic 2FA sessions. |
 | **Data Contracts** | **Pydantic** | `2.12.5` | Strict schema validation, missing field detection, and immutable serializable data transfer objects. |
 | **HTML Parsing** | **BeautifulSoup4** | `4.15.0` | Semantic DOM traversal, noise tag stripping, and heuristic attribute inspection. |
 | **HTML Parsing Engine** | **lxml** | `6.1.3` | High-performance C-accelerated tree builder for BeautifulSoup. |
 | **Spreadsheet I/O** | **openpyxl** | `3.1.5` | Ingests candidate `.xlsx` workbooks, resolves formulas (`=HYPERLINK`), and generates audit sheets. |
-| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, and integration test suite (53 passing tests). |
+| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, and integration test suite (73 passing tests). |
 | **Code Quality / Linter** | **Ruff** | `0.15.0` | High-speed Rust-based code formatter and linter enforcing PEP 8 compliance. |
-| **Static Type Checking** | **Pyright & Mypy** | `1.1.408` / `2.4.1` | Static typing enforcement across all 26 source files (0 errors). |
+| **Static Type Checking** | **Pyright & Mypy** | `1.1.408` / `2.4.1` | Static typing enforcement across all 28 source files (0 errors). |
 
 ---
 
@@ -40,20 +40,21 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 
 | Command | Shorthand | What It Does & When to Use |
 |---|---|---|
-| `.\run.bat` | `.\run` | **Primary 1-Click Runner**: Checks LinkedIn session health. If missing/expired, opens a visible browser for 2FA login. Automatically picks up input from `input/*.xlsx`, processes profiles with polite human delays (5–12s), saves JSON files to `output/`, and **automatically opens the output folder in Windows Explorer**. |
+| `.\run.bat` | `.\run` | **Primary 1-Click Runner**: Checks LinkedIn session health. If missing/expired, opens a visible browser for 2FA login. Automatically picks up input from `input/*.xlsx`, processes profiles with polite human delays (1.0–2.0s), preserves prior outputs by default, saves JSON files to `output/profiles/`, and **automatically opens the output folder in Windows Explorer**. |
 | `.\run.bat "<input>" "<output>"` | `.\run "in.xlsx" "out"` | **Custom Paths Runner**: Runs on an input file anywhere on the machine and writes to any output folder. **Persists these paths** in `.run_state.json` so future bare `.\run` runs remember them without retyping. |
 | `.\run.bat "output\<out_dir>"` | `.\run "output\C:\path"` / `.\run "C:\path\output"` | **Output-Only Override**: Changes the output folder without re-specifying the input file. Recognizes `output\` prefix or `\output` suffix, keeping the default/remembered spreadsheet. |
+| `.\run.bat --prune-stale` | `.\run --prune-stale` | **Safe Stale File Cleanup**: Opt-in flag to delete JSON files from previous batches that are no longer in the input spreadsheet. Disabled by default to prevent accidental data loss. |
 | `.\run.bat --fake` | `.\run --fake` | **Offline / Demo Mode**: Executes the entire pipeline against simulated synthetic profile fixtures with zero network calls. Perfect for safe presentations and testing. |
-| `.\run.bat --fast` | `.\run --fast` | **High-Speed Mode**: Reduces polite delays between profiles to 0.5s–1.0s (instead of 5s–12s) for rapid testing or swift demos. |
-| `.\run.bat --max-profiles 3` | `.\run --max-profiles 3` | **Profile Cap**: Stops processing after processing the specified number of valid profiles. |
+| `.\run.bat --fast` | `.\run --fast` | **High-Speed Mode**: Reduces polite delays between profiles to 0.5s–1.0s (instead of 1.0s–2.0s) for rapid testing or swift demos. |
+| `.\run.bat --max-profiles 3` | `.\run --max-profiles 3` | **Profile Cap**: Stops processing after processing the specified number of valid profiles; unvisited valid profiles are reconciled in `not_processed_count`. |
 | `.\run.bat login` | `python -m profile_extractor login` | **Stand-alone Login Helper**: Explicitly opens a visible Chromium browser to `https://www.linkedin.com/login` and exports active cookies to `.auth/state.json`. |
 | `.\run.bat logout` | `.\run logout` / `.\run clean-session` | **Clean Session**: Manually clears saved `.auth/state.json` so future runs prompt for login (pass `--all` to also reset remembered paths). |
 | `.\run.bat --help` | `.\run -h` | **Help & Manual**: Prints all available arguments, options, and flags. |
 | `.\extract.bat` | — | **Legacy Runner**: Retained for backward-compatibility; delegates directly to the extraction engine. |
-| `pytest -m "not live"` | — | **Automated Test Suite**: Executes all 53 automated unit and integration tests in ~1.3 seconds. |
+| `pytest -m "not live"` | — | **Automated Test Suite**: Executes all 73 automated unit, contract, and regression tests in ~5 seconds. |
 | `ruff check src tests` | — | **Lint Check**: Validates PEP 8 style, import ordering, and code cleanliness (0 errors). |
 | `pyright src tests` | — | **Type Engine Verification**: Verifies static typing across the entire codebase (0 errors). |
-| `mypy src tests` | — | **Strict Static Typing**: Runs Mypy static analysis across all source files (0 errors). |
+| `mypy src tests` | — | **Strict Static Typing**: Runs Mypy static analysis across all 28 source files (0 errors). |
 
 ---
 
@@ -157,15 +158,15 @@ Both work directly from PowerShell or Command Prompt:
 ```
 
 > [!TIP]
-> **Automatic Path Memory & Stale File Prevention**:
+> **Automatic Path Memory & Safe Data Preservation**:
 > - **Path Memory**: Whenever you specify a custom input file or output directory, the tool saves them in a local `.run_state.json` file. Future runs (`.\run` or `.\extract`) automatically remember and reuse your chosen paths without needing to re-type them!
-> - **Clean Output**: Each fresh run automatically clears old `.json` profiles from the output directory before saving, ensuring that stale profiles from earlier runs never linger or pollute your current output.
+> - **Safe Data Preservation by Default**: Old `.json` profile files in the output directory are preserved by default. To clean up stale profiles from older runs that are no longer in the current input spreadsheet, pass `--prune-stale` (pruning only executes after an uninterrupted run with valid profiles).
 > - **Single Window Pop-Up**: When extraction completes, a single Windows File Explorer window pops open directly to the extracted `profiles/` directory.
 
 ---
 
-### Unedited Raw Text Dump (`raw_text`)
-Each extracted JSON profile in `output/profiles/<slug>.json` contains both structured parsed fields and a full, unedited, unformatted text dump of the entire profile at the end:
+### Profile Container Cleaned Text Dump (`raw_text`)
+Each extracted JSON profile in `output/profiles/<slug>.json` contains both structured parsed fields and a clean visible text dump of the candidate profile container at the end. Non-content noise elements (scripts, stylesheets, templates, modals, dialogs, navigation bars, and language selector footers) are stripped before capturing the visible text from the profile's `<main>` container:
 
 ```json
 {
@@ -218,14 +219,23 @@ important_fields = [
   "experience", "education", "skills"
 ]
 
-delay_seconds_min = 5.0
-delay_seconds_max = 12.0
+delay_seconds_min = 1.0
+delay_seconds_max = 2.0
 page_timeout_seconds = 30.0
 max_profiles = 0          # 0 or null for unlimited
 headless = true
+deep_details = true       # Unrolls full skills, experience, and education
+prune_stale = false       # Disabled by default to protect existing output
 stop_on_block = true      # Halts immediately upon CAPTCHA/challenge
 log_level = "INFO"
 ```
+
+### Configuration Precedence Order
+When settings are defined across multiple sources, parameters are evaluated with deterministic precedence:
+1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--prune-stale`, `--fast`, `--max-profiles`).
+2. **Remembered Run State**: Saved paths in `.run_state.json` from previous executions.
+3. **Configuration File**: Values specified in `config.toml` (or custom TOML passed with `-c` / `--config`).
+4. **Application Defaults**: Built-in defaults in `ExtractorConfig`.
 
 ---
 

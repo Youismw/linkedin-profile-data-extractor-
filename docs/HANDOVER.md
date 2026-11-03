@@ -11,9 +11,9 @@
 This tool was developed as an internship prototype to demonstrate automated profile extraction from an Excel spreadsheet of LinkedIn URLs. It converts unstructured web profiles into validated, contract-compliant JSON documents and creates detailed discrepancy reports for unreachable links.
 
 The application follows software engineering best practices:
-- Fully typed (100% type coverage, Pyright strict/standard compliant).
-- Comprehensive test coverage with unit, contract, and end-to-end integration tests.
-- Privacy-first design (no personal data in logs or git).
+- Fully typed (100% type coverage, Pyright and Mypy strict/standard compliant across 28 files).
+- Comprehensive test coverage with 73 passing unit, contract, regression, and end-to-end integration tests.
+- Privacy-first design (candidate personal details are strictly confined to output; operational logs record only row numbers, URLs, and slugs for progress auditing).
 - Clean architectural decoupling using the `Fetcher` protocol.
 
 ---

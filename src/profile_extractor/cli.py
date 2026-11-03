@@ -16,7 +16,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from profile_extractor.config import load_config
+from profile_extractor.config import load_config, read_config_file
 from profile_extractor.fetcher import (
     FakeFetcher,
     Fetcher,
@@ -171,6 +171,13 @@ def build_parser() -> argparse.ArgumentParser:
             "and experience (default: True)"
         ),
     )
+    run_parser.add_argument(
+        "--prune-stale",
+        dest="prune_stale",
+        action="store_true",
+        default=False,
+        help="Prune JSON profiles in output that are not in current input (opt-in)",
+    )
 
     # --------------------------------------------------------------------------
     # 'login' subcommand (stand-alone session creator)
@@ -302,8 +309,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_choice = args.output_dir or output_pos
 
         run_state = _load_run_state()
+        config_data = read_config_file(args.config_file)
 
-        # 1. Resolve Input Spreadsheet Path (Strict: NEVER guess or silently fallback)
+        # 1. Resolve Input Spreadsheet Path
+        # Precedence: Explicit CLI arg > Remembered run state > config.toml
         input_path: Path | None = None
         if input_choice:
             candidate = Path(input_choice)
@@ -346,8 +355,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 run_state.pop("last_input", None)
                 _save_run_state(run_state)
+        elif config_data.get("input_file"):
+            cfg_in = Path(str(config_data["input_file"]))
+            if cfg_in.is_file():
+                input_path = cfg_in
+            else:
+                print(
+                    f"\n[ERROR] input_file configured in config.toml does not exist: {cfg_in}\n",
+                    file=sys.stderr,
+                )
+                return 1
 
-        # Fail honestly if no input file was provided or remembered
+        # Fail honestly if no input file was provided, remembered, or configured
         if not input_path:
             print("\n" + "=" * 70, file=sys.stderr)
             print("[ERROR] No input spreadsheet provided.", file=sys.stderr)
@@ -364,6 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         overrides["input_file"] = input_path
 
         # 2. Resolve Output Directory Path
+        # Precedence: Explicit CLI arg > Remembered run state > config.toml > 'output'
         out_dir_path: Path
         if output_choice:
             candidate_out = Path(output_choice)
@@ -382,6 +402,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 out_dir_path = Path("output")
             else:
                 out_dir_path = rem_out
+        elif config_data.get("output_dir"):
+            out_dir_path = Path(str(config_data["output_dir"]))
         else:
             # Default to standard project output/ directory
             out_dir_path = Path("output")
@@ -412,6 +434,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             overrides["headless"] = False
         if getattr(args, "deep_details", None) is not None:
             overrides["deep_details"] = args.deep_details
+        if getattr(args, "prune_stale", False):
+            overrides["prune_stale"] = True
 
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)

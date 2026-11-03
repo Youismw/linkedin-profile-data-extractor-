@@ -57,8 +57,8 @@ def normalize_profile_url(raw_url: str) -> str | None:
     if not cleaned:
         return None
 
-    # Prepend scheme if missing so urlsplit parses network location correctly
-    if not cleaned.startswith(("http://", "https://")):
+    # Case-insensitive scheme check to prevent 'https://HTTPS://...' duplication
+    if not cleaned.lower().startswith(("http://", "https://")):
         cleaned = "https://" + cleaned
 
     try:
@@ -86,9 +86,9 @@ def normalize_profile_url(raw_url: str) -> str | None:
     if len(segments) > 2 and segments[2].lower() not in ("details", "overlay", "recent-activity"):
         return None
 
-    # Decode percent-encoded Unicode characters in the slug
+    # Decode percent-encoded Unicode characters in the slug (sanitizing any decoded slashes)
     raw_slug = segments[1]
-    decoded_slug = unquote(raw_slug).strip()
+    decoded_slug = unquote(raw_slug).replace("/", "-").strip()
     if not decoded_slug:
         return None
 

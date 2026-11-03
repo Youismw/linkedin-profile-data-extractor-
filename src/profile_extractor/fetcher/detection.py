@@ -80,16 +80,40 @@ def detect_outcome(
     Returns:
         tuple of (Status, Reason, diagnostic_detail_string).
     """
-    # 1. Check HTTP Status Codes (rate limiting, blocked, 404)
-    if status_code in (429, 999):
-        return (
-            Status.UNREACHABLE,
-            Reason.BLOCKED,
-            f"Rate limited or request denied by LinkedIn (HTTP {status_code})",
-        )
-
-    if status_code == 404:
-        return Status.UNREACHABLE, Reason.NOT_FOUND, "HTTP status 404 Not Found"
+    # 1. Check HTTP Status Codes
+    if status_code is not None:
+        if status_code in (429, 999):
+            return (
+                Status.UNREACHABLE,
+                Reason.BLOCKED,
+                f"Rate limited or request denied by LinkedIn (HTTP {status_code})",
+            )
+        if status_code == 401:
+            return (
+                Status.UNREACHABLE,
+                Reason.NOT_VISIBLE,
+                "Authentication required / session expired (HTTP 401)",
+            )
+        if status_code == 403:
+            return (
+                Status.UNREACHABLE,
+                Reason.BLOCKED,
+                "Forbidden / Access restricted by LinkedIn (HTTP 403)",
+            )
+        if status_code in (404, 410):
+            return Status.UNREACHABLE, Reason.NOT_FOUND, f"Profile not found (HTTP {status_code})"
+        if 500 <= status_code < 600:
+            return (
+                Status.UNREACHABLE,
+                Reason.UNEXPECTED_ERROR,
+                f"LinkedIn server error (HTTP {status_code})",
+            )
+        if 400 <= status_code < 500:
+            return (
+                Status.UNREACHABLE,
+                Reason.UNEXPECTED_ERROR,
+                f"Client error response (HTTP {status_code})",
+            )
 
     # 2. Check for Security Challenges / Bot Blocks (URL redirects first)
     for pattern in BLOCKED_URL_PATTERNS:

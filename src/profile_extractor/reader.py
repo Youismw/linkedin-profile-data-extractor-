@@ -59,29 +59,38 @@ def is_link_like(val: str) -> bool:
 
 
 def _find_best_worksheet(wb: Any) -> Any:
-    """Select the worksheet containing candidate links or designated title."""
+    """Select the worksheet containing candidate links by scoring actual contents."""
     if len(wb.worksheets) == 1:
         return wb.worksheets[0]
 
-    # Check sheet titles for keywords
-    for sheet in wb.worksheets:
-        title = sheet.title.lower()
-        if any(k in title for k in ("candidate", "profile", "link", "url", "data", "sheet1")):
-            return sheet
+    best_sheet = wb.worksheets[0]
+    best_score = -1
 
-    # Scan for sheets that actually contain links
     for sheet in wb.worksheets:
-        max_r = min(sheet.max_row or 0, 15)
-        max_c = min(sheet.max_column or 0, 10)
+        score = 0
+        title = sheet.title.lower()
+        # Signal bonus if title specifically targets profiles or candidates
+        if any(k in title for k in ("candidate", "profile", "linkedin", "links")):
+            score += 5
+
+        # Score by counting actual link-like cells in the sheet
+        max_r = min(sheet.max_row or 0, 30)
+        max_c = min(sheet.max_column or 0, 15)
+        link_count = 0
         for r in range(1, max_r + 1):
             for c in range(1, max_c + 1):
                 cell = sheet.cell(row=r, column=c)
                 val = str(cell.value or "")
                 hl = cell.hyperlink.target if (cell.hyperlink and cell.hyperlink.target) else ""
                 if is_link_like(val) or is_link_like(hl):
-                    return sheet
+                    link_count += 1
 
-    return wb.worksheets[0]
+        score += link_count * 10
+        if score > best_score:
+            best_score = score
+            best_sheet = sheet
+
+    return best_sheet
 
 
 def _find_best_column(sheet: Any, max_row: int) -> int:
