@@ -102,6 +102,13 @@ def run_pipeline(
 
             slug = row.slug or ""
             url = row.normalized or ""
+            logger.info(
+                "Row %d: visiting profile '%s' (%d of %d)...",
+                row.row_number,
+                slug,
+                idx + 1,
+                num_valid,
+            )
 
             try:
                 fetch_res = fetcher.fetch(url)
@@ -184,6 +191,7 @@ def run_pipeline(
             # Apply polite pacing delay only between profiles, never after the final profile
             if idx < num_valid - 1 and not stop_triggered:
                 delay = random.uniform(config.delay_seconds_min, config.delay_seconds_max)
+                logger.info("Applying polite delay of %.1fs before next profile...", delay)
                 sleep_fn(delay)
 
     finally:

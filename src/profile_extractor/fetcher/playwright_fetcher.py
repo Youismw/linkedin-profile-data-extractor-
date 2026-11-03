@@ -147,23 +147,26 @@ class PlaywrightFetcher:
 
     def close(self) -> None:
         """Release browser context and shut down Playwright."""
-        if self._context:
-            try:
-                self._context.close()
-            except Exception:
-                pass
-            self._context = None
+        try:
+            if self._context:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
+                self._context = None
 
-        if self._browser:
-            try:
-                self._browser.close()
-            except Exception:
-                pass
-            self._browser = None
+            if self._browser:
+                try:
+                    self._browser.close()
+                except Exception:
+                    pass
+                self._browser = None
 
-        if self._playwright:
-            try:
-                self._playwright.stop()
-            except Exception:
-                pass
-            self._playwright = None
+            if self._playwright:
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
+                self._playwright = None
+        except (Exception, KeyboardInterrupt):
+            pass

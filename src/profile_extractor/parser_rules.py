@@ -56,3 +56,4 @@ LOCATION_SELECTORS: Final[list[str]] = [
     "[data-field='location']",
     "span.location",
 ]
+

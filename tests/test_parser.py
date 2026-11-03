@@ -157,3 +157,4 @@ class TestParser:
         assert doc.meta.reason == Reason.PARSE_FAILED
         assert doc.profile.name is None
         assert doc.to_serializable_dict()["profile"] == {}
+

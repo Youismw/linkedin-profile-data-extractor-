@@ -86,7 +86,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "run":
         overrides: dict[str, object] = {}
         if args.input_file:
-            overrides["input_file"] = Path(args.input_file)
+            input_path = Path(args.input_file)
+            if not input_path.is_file():
+                # Check Desktop as convenient fallback
+                desktop_fallback = Path.home() / "Desktop" / input_path.name
+                if desktop_fallback.is_file():
+                    input_path = desktop_fallback
+            overrides["input_file"] = input_path
         if args.output_dir:
             overrides["output_dir"] = Path(args.output_dir)
         if args.max_profiles is not None:
