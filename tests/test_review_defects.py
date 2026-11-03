@@ -302,17 +302,111 @@ class TestReviewDefectFixes:
         assert res.rows[0].slug == "cand-1"
         assert res.rows[1].slug == "cand-2"
 
-    # Defect 10: URL normalization uppercase scheme and percent-decoding
+    # Defect 10: URL normalization uppercase scheme and reserved character rejection
     def test_url_normalization_uppercase_and_percent_decoding(self) -> None:
-        """Verify uppercase scheme HTTPS:// and decoded path slashes %2F normalize safely."""
+        """Verify uppercase scheme HTTPS:// and rejection of reserved delimiter characters."""
         # Uppercase scheme
         url_upper = "HTTPS://www.linkedin.com/in/example-dev/"
         norm_upper = normalize_profile_url(url_upper)
         assert norm_upper == "https://www.linkedin.com/in/example-dev/"
         assert extract_slug(norm_upper) == "example-dev"
 
-        # Decoded slash %2F in slug segment is replaced with hyphen
+        # Valid percent-encoded Unicode letters decode safely
+        url_unicode = "https://www.linkedin.com/in/ren%C3%A9e-dev/"
+        norm_unicode = normalize_profile_url(url_unicode)
+        assert norm_unicode == "https://www.linkedin.com/in/renée-dev/"
+        assert extract_slug(norm_unicode) == "renée-dev"
+
+        # Reserved URL delimiter %2F (slash) is rejected to prevent identifier mutation
         url_encoded_slash = "https://www.linkedin.com/in/path%2Fuser/"
-        norm_slash = normalize_profile_url(url_encoded_slash)
-        assert norm_slash == "https://www.linkedin.com/in/path-user/"
-        assert extract_slug(norm_slash) == "path-user"
+        assert normalize_profile_url(url_encoded_slash) is None
+
+        # Reserved URL delimiters %3F (query ?) and %23 (fragment #) are rejected
+        assert normalize_profile_url("https://www.linkedin.com/in/john%3Fdoe/") is None
+        assert normalize_profile_url("https://www.linkedin.com/in/john%23doe/") is None
+
+    # New Edge-case 1: URL validation rejects userinfo / external hostname tricks
+    def test_url_validation_rejects_userinfo_and_external_hosts(self) -> None:
+        """Verify URLs with embedded credentials or spoofed hostnames are strictly rejected."""
+        # Hostname spoofing with userinfo
+        evil_spoof = "https://linkedin.com:443@evil.com/in/john-doe"
+        assert normalize_profile_url(evil_spoof) is None
+
+        # Userinfo on linkedin.com
+        userinfo_url = "https://user:pass@www.linkedin.com/in/john-doe"
+        assert normalize_profile_url(userinfo_url) is None
+
+        # Non-standard port
+        bad_port_url = "https://www.linkedin.com:8080/in/john-doe"
+        assert normalize_profile_url(bad_port_url) is None
+
+    # New Edge-case 2: CSV headerless detection preserves first candidate with 'profile' in title
+    def test_csv_headerless_detection_preserves_first_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify headerless CSV does not discard first candidate whose job title contains 'profile'."""
+        csv_file = tmp_path / "candidates.csv"
+        csv_file.write_text(
+            "Profile Engineer,Jane Doe,https://www.linkedin.com/in/jane-doe/\n"
+            "Sales Manager,John Smith,https://www.linkedin.com/in/john-smith/\n",
+            encoding="utf-8",
+        )
+
+        res = read_profile_urls(csv_file)
+        assert res.rows_valid == 2
+        assert res.rows[0].slug == "jane-doe"
+        assert res.rows[1].slug == "john-smith"
+
+    # New Edge-case 4: Writer strictly prevents directory traversal
+    def test_writer_prevents_directory_traversal(self, tmp_path: Path) -> None:
+        """Verify write_profile_json sanitizes explicit stems and prevents directory traversal."""
+        from profile_extractor.models import Meta, Profile, ProfileDocument, Status
+        from profile_extractor.writer import write_profile_json
+
+        doc = ProfileDocument(
+            meta=Meta(
+                source_url="https://www.linkedin.com/in/traversal-test/",
+                slug="traversal-test",
+                status=Status.OK,
+            ),
+            profile=Profile(name="Traversal Tester"),
+        )
+        out_dir = tmp_path / "safe_output"
+        out_dir.mkdir()
+
+        # Pass a traversal attempt: ../../escape
+        written_path = write_profile_json(doc, out_dir, filename_stem="../../escape")
+
+        # Must be contained inside out_dir (sanitized to 'escape.json' inside out_dir)
+        assert written_path.parent == out_dir.resolve()
+        assert written_path.exists()
+        assert not (tmp_path / "escape.json").exists()
+
+    # New Edge-case 6: Normal INFO logs do not contain candidate slugs
+    def test_normal_logs_do_not_contain_candidate_slugs(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Verify orchestrator INFO logs omit personally identifiable candidate slugs."""
+        import logging
+
+        input_xlsx = tmp_path / "privacy_test.xlsx"
+        output_dir = tmp_path / "out"
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Links"])
+        ws.append(["https://www.linkedin.com/in/secret-person-12345/"])
+        wb.save(input_xlsx)
+
+        config = ExtractorConfig(input_file=input_xlsx, output_dir=output_dir)
+
+        with caplog.at_level(logging.INFO, logger="profile_extractor"):
+            run_pipeline(config, FakeFetcher(), sleep_fn=lambda _: None)
+
+        # Check all logged INFO messages
+        info_messages = [
+            r.message for r in caplog.records if r.levelno == logging.INFO
+        ]
+        for msg in info_messages:
+            assert "secret-person-12345" not in msg

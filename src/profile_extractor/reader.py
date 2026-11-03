@@ -94,28 +94,35 @@ def _find_best_worksheet(wb: Any) -> Any:
 
 
 def _find_best_column(sheet: Any, max_row: int) -> int:
-    """Detect which column contains LinkedIn profile URLs."""
+    """Detect which column contains LinkedIn profile URLs by scoring actual link distribution."""
     max_col = sheet.max_column or 1
     if max_col <= 1:
         return 1
 
-    # Check header row (row 1)
-    for c in range(1, max_col + 1):
-        header_val = str(sheet.cell(row=1, column=c).value or "").strip().lower()
-        if any(k in header_val for k in ("linkedin", "profile", "url", "link")):
-            return c
+    scan_limit = min(max_row, 30)
+    col_scores = [0] * (max_col + 1)
 
-    # Scan first 10 rows for link-like cells
-    scan_limit = min(max_row, 10)
     for c in range(1, max_col + 1):
         for r in range(1, scan_limit + 1):
             cell = sheet.cell(row=r, column=c)
             val = str(cell.value or "")
             hl = cell.hyperlink.target if (cell.hyperlink and cell.hyperlink.target) else ""
             if is_link_like(val) or is_link_like(hl):
-                return c
+                col_scores[c] += 10
 
-    return 1
+        # Header keyword bonus
+        header_val = str(sheet.cell(row=1, column=c).value or "").strip().lower()
+        if any(k in header_val for k in ("linkedin", "profile link", "profile url", "url")):
+            col_scores[c] += 2
+
+    best_col = 1
+    best_score = -1
+    for c in range(1, max_col + 1):
+        if col_scores[c] > best_score:
+            best_score = col_scores[c]
+            best_col = c
+
+    return best_col if best_score > 0 else 1
 
 
 def _read_csv_urls(path: Path) -> ReadResult:
@@ -135,18 +142,42 @@ def _read_csv_urls(path: Path) -> ReadResult:
             rows=[], rows_read=0, rows_valid=0, rows_invalid=0, duplicates_skipped=0
         )
 
-    # Determine URL column from header or data
+    # 1. Evaluate link distribution across all columns to pick the true URL column
+    num_cols = max(len(r) for r in reader) if reader else 0
+    col_link_counts = [0] * num_cols
+    col_header_scores = [0] * num_cols
+
+    for r_idx, row in enumerate(reader[:30]):
+        for c_idx, cell in enumerate(row):
+            if is_link_like(cell):
+                col_link_counts[c_idx] += 10
+            if r_idx == 0:
+                cell_lower = cell.strip().lower()
+                if any(
+                    k in cell_lower
+                    for k in ("linkedin", "profile url", "profile link", "url")
+                ):
+                    col_header_scores[c_idx] += 2
+
     url_col = 0
+    combined_scores = [
+        col_link_counts[i] + col_header_scores[i] for i in range(num_cols)
+    ]
+    if combined_scores and max(combined_scores) > 0:
+        url_col = combined_scores.index(max(combined_scores))
+
+    # 2. Header Detection: If ANY cell in row 0 contains a valid LinkedIn profile URL,
+    # row 0 is definitely candidate data, NOT a header!
     first_row = reader[0]
-    for c_idx, cell in enumerate(first_row):
-        cell_lower = cell.strip().lower()
-        if any(k in cell_lower for k in ("linkedin", "profile", "url", "link")):
-            url_col = c_idx
-            break
+    row0_has_valid_url = any(
+        is_link_like(c) and normalize_profile_url(c) is not None for c in first_row
+    )
 
     start_idx = 0
-    if first_row and not is_link_like(first_row[url_col]):
-        start_idx = 1
+    if not row0_has_valid_url:
+        # Check if the designated URL column cell in row 0 looks like a text header
+        if url_col < len(first_row) and not is_link_like(first_row[url_col]):
+            start_idx = 1
 
     for row_num, row_data in enumerate(reader[start_idx:], start=start_idx + 1):
         if not row_data or not any(c.strip() for c in row_data):
@@ -252,19 +283,36 @@ def read_profile_urls(
 
         start_row = 1
 
-        # Header Detection Heuristic
-        first_cell = sheet.cell(row=1, column=effective_col)
-        first_val = str(first_cell.value or "").strip()
-        first_hyperlink = (
-            first_cell.hyperlink.target
-            if (first_cell.hyperlink and first_cell.hyperlink.target)
-            else None
-        )
+        # Header Detection Heuristic:
+        # If ANY cell in row 1 contains a valid LinkedIn profile URL, row 1 is data, NOT a header!
+        row1_has_valid_url = False
+        max_c = sheet.max_column or 1
+        for c in range(1, max_c + 1):
+            c_cell = sheet.cell(row=1, column=c)
+            c_val = str(c_cell.value or "").strip()
+            c_hl = (
+                c_cell.hyperlink.target
+                if (c_cell.hyperlink and c_cell.hyperlink.target)
+                else None
+            )
+            candidate = c_hl or c_val
+            if candidate and is_link_like(candidate) and normalize_profile_url(candidate):
+                row1_has_valid_url = True
+                break
 
-        if first_val or first_hyperlink:
-            candidate_link = first_hyperlink or first_val
-            if not is_link_like(candidate_link):
-                start_row = 2
+        start_row = 1
+        if not row1_has_valid_url:
+            first_cell = sheet.cell(row=1, column=effective_col)
+            first_val = str(first_cell.value or "").strip()
+            first_hyperlink = (
+                first_cell.hyperlink.target
+                if (first_cell.hyperlink and first_cell.hyperlink.target)
+                else None
+            )
+            if first_val or first_hyperlink:
+                candidate_link = first_hyperlink or first_val
+                if not is_link_like(candidate_link):
+                    start_row = 2
 
         seen_slugs: set[str] = set()
         rows: list[InputRow] = []

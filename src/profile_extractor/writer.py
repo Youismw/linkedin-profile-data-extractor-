@@ -97,16 +97,27 @@ def write_profile_json(
 
     File is saved as <filename_stem>.json (default: canonical sanitized slug).
     Uses UTF-8 encoding with ensure_ascii=False to preserve international names.
+    Enforces path-traversal safety checks to guarantee output stays within output_dir.
 
     Returns:
         The Path to the written JSON file.
     """
-    out_dir = Path(output_dir)
-    # Sanitize slug so special characters never cause directory traversal or illegal paths
-    clean_slug = filename_stem or profile_filename_stem(
-        document.meta.slug, document.meta.source_url
+    out_dir = Path(output_dir).resolve()
+    raw_stem = (
+        filename_stem
+        if filename_stem is not None
+        else profile_filename_stem(document.meta.slug, document.meta.source_url)
     )
-    target_path = out_dir / f"{clean_slug}.json"
+
+    # Strip directory parts and sanitize to protect against path traversal (e.g. '../../')
+    clean_stem = sanitize_slug(Path(raw_stem).name, fallback_seed=document.meta.source_url)
+    target_path = (out_dir / f"{clean_stem}.json").resolve()
+
+    # Defensive boundary verification
+    try:
+        target_path.relative_to(out_dir)
+    except ValueError:
+        raise ValueError(f"Path traversal detected: {filename_stem!r} escapes {out_dir}")
 
     # Serialize using contract model method
     data = document.to_serializable_dict()

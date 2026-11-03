@@ -12,7 +12,7 @@ This tool was developed as an internship prototype to demonstrate automated prof
 
 The application follows software engineering best practices:
 - Fully typed (100% type coverage, Pyright and Mypy strict/standard compliant across 28 files).
-- Comprehensive test coverage with 73 passing unit, contract, regression, and end-to-end integration tests.
+- Comprehensive test coverage with 77 passing unit, contract, regression, and end-to-end integration tests.
 - Privacy-first design (candidate personal details are strictly confined to output; operational logs record only row numbers, URLs, and slugs for progress auditing).
 - Clean architectural decoupling using the `Fetcher` protocol.
 

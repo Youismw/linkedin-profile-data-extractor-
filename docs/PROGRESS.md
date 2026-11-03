@@ -190,7 +190,7 @@
 - [x] Unreachable profiles marked in JSON and listed in `unreachable_profiles.xlsx`
 - [x] `run_summary.json` accounts for every row (the counts add up mathematically)
 - [x] No hardcoded profile count; works for 1 row and 1000 rows
-- [x] Tests, lint, and type checks pass (73 tests, 0 ruff errors, 0 pyright errors, 0 mypy errors)
+- [x] Tests, lint, and type checks pass (77 tests, 0 ruff errors, 0 pyright errors, 0 mypy errors)
 - [x] No personal profile data in logs or in the repository; operational logs record only URLs and slugs
 - [x] `README.md`, `docs/ARCHITECTURE.md`, and `docs/HANDOVER.md` complete, with limitations stated honestly
 - [x] Demo rehearsed once, including the fallback mode

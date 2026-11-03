@@ -30,7 +30,7 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | **HTML Parsing** | **BeautifulSoup4** | `4.15.0` | Semantic DOM traversal, noise tag stripping, and heuristic attribute inspection. |
 | **HTML Parsing Engine** | **lxml** | `6.1.3` | High-performance C-accelerated tree builder for BeautifulSoup. |
 | **Spreadsheet I/O** | **openpyxl** | `3.1.5` | Ingests candidate `.xlsx` workbooks, resolves formulas (`=HYPERLINK`), and generates audit sheets. |
-| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, and integration test suite (73 passing tests). |
+| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, and integration test suite (77 passing tests). |
 | **Code Quality / Linter** | **Ruff** | `0.15.0` | High-speed Rust-based code formatter and linter enforcing PEP 8 compliance. |
 | **Static Type Checking** | **Pyright & Mypy** | `1.1.408` / `2.4.1` | Static typing enforcement across all 28 source files (0 errors). |
 
@@ -51,7 +51,7 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | `.\run.bat logout` | `.\run logout` / `.\run clean-session` | **Clean Session**: Manually clears saved `.auth/state.json` so future runs prompt for login (pass `--all` to also reset remembered paths). |
 | `.\run.bat --help` | `.\run -h` | **Help & Manual**: Prints all available arguments, options, and flags. |
 | `.\extract.bat` | — | **Legacy Runner**: Retained for backward-compatibility; delegates directly to the extraction engine. |
-| `pytest -m "not live"` | — | **Automated Test Suite**: Executes all 73 automated unit, contract, and regression tests in ~5 seconds. |
+| `pytest -m "not live"` | — | **Automated Test Suite**: Executes all 77 automated unit, contract, and regression tests in ~5 seconds. |
 | `ruff check src tests` | — | **Lint Check**: Validates PEP 8 style, import ordering, and code cleanliness (0 errors). |
 | `pyright src tests` | — | **Type Engine Verification**: Verifies static typing across the entire codebase (0 errors). |
 | `mypy src tests` | — | **Strict Static Typing**: Runs Mypy static analysis across all 28 source files (0 errors). |

@@ -41,8 +41,8 @@ class PlaywrightFetcher:
         headless: bool = True,
         timeout_seconds: float = 30.0,
         save_raw_html_dir: Path | str | None = None,
-        max_scroll_steps: int = 15,
-        scroll_step_delay_ms: int = 400,
+        max_scroll_steps: int = 35,
+        scroll_step_delay_ms: int = 350,
         interactive_relogin: bool = True,
     ) -> None:
         self.auth_state_path = Path(auth_state_path) if auth_state_path else None
@@ -103,7 +103,7 @@ class PlaywrightFetcher:
         5. If session expired, triggers interactive relogin and retries.
         """
         logger = get_logger()
-        logger.debug("Fetching profile via Playwright: %s", url)
+        logger.debug("Fetching profile via Playwright")
         now_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         try:
@@ -120,6 +120,8 @@ class PlaywrightFetcher:
                 # Scrolls document.querySelector('main') and window by 600px
                 # increments to trigger GraphQL lazy loading of lower sections.
                 # --------------------------------------------------------------
+                reached_bottom = False
+                consecutive_at_bottom = 0
                 for _ in range(self.max_scroll_steps):
                     scroll_info = page.evaluate("""() => {
                         const m = document.querySelector('main')
@@ -145,9 +147,21 @@ class PlaywrightFetcher:
                     }""")
                     page.wait_for_timeout(self.scroll_step_delay_ms)
                     if isinstance(scroll_info, dict):
-                        # Stop scrolling early if container reached the bottom
-                        if not scroll_info.get("moved") and scroll_info.get("atBottom"):
-                            break
+                        # Verify container reached and settled at the bottom
+                        if scroll_info.get("atBottom") and not scroll_info.get("moved"):
+                            consecutive_at_bottom += 1
+                            if consecutive_at_bottom >= 2:
+                                reached_bottom = True
+                                break
+                        else:
+                            consecutive_at_bottom = 0
+
+                if not reached_bottom and self.max_scroll_steps > 0:
+                    logger.warning(
+                        "Page scrolling reached safety limit (%d steps) before confirming bottom; "
+                        "some dynamic lazy-loaded sections may be incomplete.",
+                        self.max_scroll_steps,
+                    )
 
                 # Settle delay for DOM mutations to finish rendering
                 page.wait_for_timeout(1000)

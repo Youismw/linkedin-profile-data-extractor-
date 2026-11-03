@@ -23,12 +23,31 @@ CANONICAL_DOMAIN = "www.linkedin.com"
 def is_linkedin_host(netloc: str) -> bool:
     """Check whether a host belongs to LinkedIn (including country subdomains).
 
-    Handles hostname normalization and strips non-standard port numbers.
+    Handles hostname normalization and rejects credentials or external hosts.
     Accepts: 'linkedin.com', 'www.linkedin.com', 'in.linkedin.com', etc.
-    Rejects: 'notlinkedin.com', 'phishing-linkedin.com'.
+    Rejects: 'evil.com', 'linkedin.com:443@evil.com', 'notlinkedin.com'.
     """
-    clean_host = netloc.lower().split(":")[0]  # strip port if present
-    return clean_host == "linkedin.com" or clean_host.endswith(".linkedin.com")
+    if not netloc:
+        return False
+    try:
+        parts = urlsplit(f"//{netloc}")
+    except Exception:
+        return False
+
+    if parts.username or parts.password:
+        return False
+
+    try:
+        if parts.port is not None and parts.port not in (80, 443):
+            return False
+    except ValueError:
+        return False
+
+    hostname = parts.hostname
+    if not hostname:
+        return False
+    clean = hostname.lower()
+    return clean == "linkedin.com" or clean.endswith(".linkedin.com")
 
 
 def normalize_profile_url(raw_url: str) -> str | None:
@@ -39,9 +58,9 @@ def normalize_profile_url(raw_url: str) -> str | None:
     Transformations performed:
     - Strips leading and trailing whitespace.
     - Prepends 'https://' if scheme is omitted by user.
-    - Validates host belongs to LinkedIn.
+    - Validates host belongs to LinkedIn without embedded credentials or non-standard ports.
     - Ensures path follows standard candidate profile format (/in/<slug>).
-    - Percent-decodes URL-encoded slugs (e.g., %20 -> space or Unicode characters).
+    - Percent-decodes valid Unicode slug characters while rejecting URL delimiters.
     - Strips query parameters (?miniProfileUrn=...) and URL hashes (#experience).
 
     Returns:
@@ -67,8 +86,24 @@ def normalize_profile_url(raw_url: str) -> str | None:
         # Invalid URI formatting
         return None
 
-    # Reject non-LinkedIn domains (e.g. twitter.com, github.com)
-    if not parts.netloc or not is_linkedin_host(parts.netloc):
+    # Disallow embedded username/password in profile URLs (e.g. https://linkedin.com@evil.com)
+    if parts.username or parts.password:
+        return None
+
+    # Validate port: only standard 80, 443, or omitted allowed
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is not None and port not in (80, 443):
+        return None
+
+    # Validate hostname belongs genuinely to LinkedIn
+    hostname = parts.hostname
+    if not hostname:
+        return None
+    clean_host = hostname.lower()
+    if not (clean_host == "linkedin.com" or clean_host.endswith(".linkedin.com")):
         return None
 
     # Path must start with /in/
@@ -86,10 +121,19 @@ def normalize_profile_url(raw_url: str) -> str | None:
     if len(segments) > 2 and segments[2].lower() not in ("details", "overlay", "recent-activity"):
         return None
 
-    # Decode percent-encoded Unicode characters in the slug (sanitizing any decoded slashes)
     raw_slug = segments[1]
-    decoded_slug = unquote(raw_slug).replace("/", "-").strip()
+    # Reject raw path/query/fragment delimiters inside the slug
+    if any(c in raw_slug for c in ("?", "#", "/", "\\", "@")):
+        return None
+
+    # Decode percent-encoded characters (e.g. Unicode names or spaces)
+    decoded_slug = unquote(raw_slug).strip()
     if not decoded_slug:
+        return None
+
+    # Reject reserved URL delimiters that would alter URL structure or mutate identifiers
+    # (e.g. %2F for '/', %3F for '?', %23 for '#')
+    if any(c in decoded_slug for c in ("?", "#", "/", "\\", "@", ":", "\x00", "\r", "\n")):
         return None
 
     # Return standard canonical format

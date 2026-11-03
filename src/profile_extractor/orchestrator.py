@@ -175,12 +175,12 @@ def run_pipeline(
             slug = row.slug or ""
             url = row.normalized or ""
             logger.info(
-                "Row %d: visiting profile '%s' (%d of %d)...",
+                "Row %d: visiting candidate profile (%d of %d)...",
                 row.row_number,
-                slug,
                 idx + 1,
                 num_valid,
             )
+            logger.debug("Row %d: candidate slug '%s'", row.row_number, slug)
 
             try:
                 # Retrieve profile HTML via Playwright
@@ -229,9 +229,13 @@ def run_pipeline(
                                 random.uniform(config.delay_seconds_min, config.delay_seconds_max)
                             )
                             logger.info(
-                                "Row %d: unrolling full %s list from %s",
+                                "Row %d: unrolling full %s list...",
                                 row.row_number,
                                 section,
+                            )
+                            logger.debug(
+                                "Row %d: fetching subpage %s",
+                                row.row_number,
                                 detail_url,
                             )
                             try:
