@@ -1,4 +1,12 @@
-"""Excel reader for extracting LinkedIn profile URLs."""
+"""Excel reader for extracting LinkedIn profile URLs.
+
+Provides tolerant extraction of URLs from Excel spreadsheets:
+- Automatically detects and skips header rows (e.g., 'Profile URL', 'Candidate Links').
+- Resolves raw text URLs and cell hyperlink targets (e.g. friendly display text
+  pointing to a hyperlink).
+- Tolerates empty cells and trailing blank rows.
+- Deduplicates repeated profile links while preserving accurate row accounting.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,29 +18,32 @@ from profile_extractor.urls import extract_slug, normalize_profile_url, sanitize
 
 @dataclass
 class InputRow:
-    """A single row processed from the input spreadsheet."""
+    """A single candidate row processed from the input spreadsheet."""
 
-    row_number: int
-    raw: str
-    normalized: str | None
-    slug: str | None = None
-    sanitized_slug: str | None = None
-    error: str | None = None
+    row_number: int  # 1-based original Excel row index for auditing
+    raw: str  # Raw string as extracted from cell value or hyperlink
+    normalized: str | None  # Normalized canonical URL, or None if malformed
+    slug: str | None = None  # Decoded slug handle
+    sanitized_slug: str | None = None  # Safe filename slug
+    error: str | None = None  # Error identifier (e.g., 'invalid_url')
 
 
 @dataclass
 class ReadResult:
-    """Aggregated output from reading the Excel file."""
+    """Aggregated outcome of reading the input Excel workbook."""
 
-    rows: list[InputRow]
-    rows_read: int
-    rows_valid: int
-    rows_invalid: int
-    duplicates_skipped: int
+    rows: list[InputRow]  # All non-empty rows parsed
+    rows_read: int  # Total non-empty data rows encountered
+    rows_valid: int  # Valid canonical candidate links
+    rows_invalid: int  # Malformed links requiring failure logging
+    duplicates_skipped: int  # Repeated entries skipped to prevent duplicate work
 
 
 def is_link_like(val: str) -> bool:
-    """Determine if a cell string looks like a LinkedIn link or URL."""
+    """Determine if a cell string looks like a LinkedIn link or URL.
+
+    Distinguishes genuine links from text headers (e.g., 'Candidates', 'LinkedIn URLs').
+    """
     val_lower = val.lower().strip()
     if val_lower.startswith(("http://", "https://", "www.linkedin.", "linkedin.")):
         return True
@@ -45,25 +56,23 @@ def read_profile_urls(
     file_path: Path | str,
     column_index: int = 1,
 ) -> ReadResult:
-    """Read LinkedIn profile URLs from the first worksheet of an Excel file.
+    """Read LinkedIn profile URLs from the primary worksheet of an Excel file.
 
-    Parameters
-    ----------
-    file_path : Path | str
-        Path to the .xlsx workbook.
-    column_index : int
-        1-based column index to read (default 1).
+    Parameters:
+        file_path: Absolute or relative path to the .xlsx workbook.
+        column_index: 1-based column index to inspect (defaults to Column 1 / 'A').
 
-    Returns
-    -------
-    ReadResult
-        Structured rows, counts for valid, invalid, duplicates, and total read.
+    Returns:
+        ReadResult containing parsed rows, counts, and deduplication stats.
+
+    Raises:
+        FileNotFoundError: If the input Excel path does not exist.
     """
     path = Path(file_path)
     if not path.is_file():
         raise FileNotFoundError(f"Input Excel file does not exist: {path}")
 
-    # load_workbook data_only=False preserves hyperlinks
+    # load_workbook with data_only=False preserves formulas and hyperlinks
     wb = load_workbook(filename=path, data_only=False, read_only=False)
     try:
         sheet = wb.worksheets[0]
@@ -79,7 +88,11 @@ def read_profile_urls(
 
         start_row = 1
 
-        # Check if first row is a header
+        # ----------------------------------------------------------------------
+        # Header Detection Heuristic:
+        # Check row 1. If it has text but is not link-like, treat as header and
+        # start data processing at row 2.
+        # ----------------------------------------------------------------------
         first_cell = sheet.cell(row=1, column=column_index)
         first_val = str(first_cell.value or "").strip()
         first_hyperlink = (
@@ -88,7 +101,6 @@ def read_profile_urls(
             else None
         )
 
-        # If row 1 has content and is not link-like in text or hyperlink, treat as header
         if first_val or first_hyperlink:
             candidate_link = first_hyperlink or first_val
             if not is_link_like(candidate_link):
@@ -101,6 +113,9 @@ def read_profile_urls(
         rows_invalid = 0
         duplicates_skipped = 0
 
+        # ----------------------------------------------------------------------
+        # Row Iteration and Normalization Loop
+        # ----------------------------------------------------------------------
         for r in range(start_row, max_row + 1):
             cell = sheet.cell(row=r, column=column_index)
             cell_text = str(cell.value or "").strip()
@@ -110,17 +125,19 @@ def read_profile_urls(
                 else None
             )
 
-            # Skip completely blank rows
+            # Skip completely blank rows gracefully
             if not cell_text and not hyperlink:
                 continue
 
             rows_read += 1
-            # Prefer cell text if it looks like a URL; otherwise fallback to hyperlink target
+            # Prefer visible cell text if URL; otherwise fall back to underlying hyperlink
             raw_target = cell_text if is_link_like(cell_text) else (hyperlink or cell_text)
 
+            # Normalize to canonical format: https://www.linkedin.com/in/<slug>/
             normalized = normalize_profile_url(raw_target)
             if normalized:
                 slug = extract_slug(normalized)
+                # Deduplicate by slug handle
                 if slug in seen_slugs:
                     duplicates_skipped += 1
                     continue
@@ -139,6 +156,7 @@ def read_profile_urls(
                     )
                 )
             else:
+                # Malformed or unsupported URL
                 rows_invalid += 1
                 rows.append(
                     InputRow(

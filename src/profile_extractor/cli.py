@@ -1,4 +1,12 @@
-"""Command Line Interface for LinkedIn Profile Extractor."""
+"""Command Line Interface for LinkedIn Profile Extractor.
+
+Features:
+- Single-command execution: `.\\run` or `.\\extract` (defaults to 'run').
+- Shorthand positional syntax: `.\\run [input_file_or_dir] [output_dir]`.
+- Persistent path memory: Remembers custom input and output paths in `.run_state.json`.
+- Automatic session check: Gauges if LinkedIn cookie is expired and prompts login.
+- Single Windows Explorer popup directly into `profiles/` upon completion.
+"""
 
 import argparse
 import json
@@ -11,11 +19,12 @@ from profile_extractor.fetcher import FakeFetcher, PlaywrightFetcher, run_intera
 from profile_extractor.logging_setup import setup_logging
 from profile_extractor.orchestrator import run_pipeline
 
+# Local file storing remembered input/output paths across CLI runs
 STATE_FILE = Path(".run_state.json")
 
 
 def _load_run_state() -> dict[str, str]:
-    """Load previously saved input and output locations."""
+    """Load previously saved input and output locations from .run_state.json."""
     if STATE_FILE.is_file():
         try:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -33,14 +42,16 @@ def _save_run_state(state: dict[str, str]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct and return the argument parser for profile-extractor."""
+    """Construct and return the argument parser for profile_extractor."""
     parser = argparse.ArgumentParser(
         prog="profile_extractor",
         description="Extract profile data from LinkedIn profile URLs listed in an Excel file.",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
+    # --------------------------------------------------------------------------
     # 'run' subcommand
+    # --------------------------------------------------------------------------
     run_parser = subparsers.add_parser("run", help="Run the profile extraction pipeline")
     run_parser.add_argument(
         "input_pos",
@@ -89,7 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fast mode: minimal polite delays (0.5s - 1.0s) for quick testing/demos",
     )
 
-    # 'login' subcommand
+    # --------------------------------------------------------------------------
+    # 'login' subcommand (stand-alone session creator)
+    # --------------------------------------------------------------------------
     login_parser = subparsers.add_parser(
         "login",
         help="One-time manual login helper to save authenticated session",
@@ -108,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Default to 'run' subcommand if not specified
+    # Default to 'run' subcommand if user typed flags/arguments without a subcommand
     if not argv or (argv[0] not in ["run", "login", "-h", "--help"]):
         argv = ["run", *argv]
 
@@ -119,6 +132,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
 
+    # --------------------------------------------------------------------------
+    # Handler: login
+    # --------------------------------------------------------------------------
     if args.command == "login":
         auth_path = args.auth_path or ".auth/state.json"
         try:
@@ -128,6 +144,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Login failed: {e}", file=sys.stderr)
             return 1
 
+    # --------------------------------------------------------------------------
+    # Handler: run
+    # --------------------------------------------------------------------------
     if args.command == "run":
         overrides: dict[str, object] = {}
         input_choice = args.input_file or args.input_pos
@@ -135,9 +154,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         run_state = _load_run_state()
 
+        # 1. Resolve Input Spreadsheet Path
         if input_choice:
             input_path = Path(input_choice)
             if input_path.is_dir():
+                # Sort by newest modification time to avoid selecting stale files
                 xlsx_files = sorted(
                     input_path.glob("*.xlsx"),
                     key=lambda p: p.stat().st_mtime,
@@ -146,13 +167,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if xlsx_files:
                     input_path = xlsx_files[0]
             elif not input_path.is_file():
-                # Check Desktop as convenient fallback
+                # Convenient fallback: check user Desktop
                 desktop_fallback = Path.home() / "Desktop" / input_path.name
                 if desktop_fallback.is_file():
                     input_path = desktop_fallback
             overrides["input_file"] = input_path
             run_state["last_input"] = str(input_path.resolve())
         else:
+            # Check previously remembered input, or Desktop / input directory defaults
             last_input = (
                 Path(run_state["last_input"]) if run_state.get("last_input") else None
             )
@@ -183,6 +205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         overrides["input_file"] = xlsx_files[0]
                         run_state["last_input"] = str(xlsx_files[0].resolve())
 
+        # 2. Resolve Output Directory Path
         if output_choice:
             out_path = Path(output_choice)
             overrides["output_dir"] = out_path
@@ -190,7 +213,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif run_state.get("last_output"):
             overrides["output_dir"] = Path(run_state["last_output"])
 
+        # Persist resolved paths for future runs
         _save_run_state(run_state)
+
+        # 3. Apply Optional Operational Flags
         if args.max_profiles is not None:
             overrides["max_profiles"] = args.max_profiles
         if args.fast:
@@ -200,12 +226,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)
 
-        # Select fetcher
+        # 4. Instantiate Fetcher with Session Health Check
         if args.fake:
             fetcher = FakeFetcher()
         else:
             from profile_extractor.fetcher.login import is_session_expired
 
+            # Proactive session check: opens login window if cookies expired
             if is_session_expired(config.auth_state_path):
                 if sys.stdin and sys.stdin.isatty():
                     print("\n" + "=" * 70)
@@ -226,6 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout_seconds=config.page_timeout_seconds,
             )
 
+        # 5. Execute Pipeline and Pop Output Folder
         try:
             summary = run_pipeline(config, fetcher)
             print(
@@ -235,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"Output saved to {summary.output_dir}"
             )
 
-            # Automatically pop open the output folder in Windows File Explorer
+            # Automatically pop open a single Windows File Explorer window into profiles/
             try:
                 profiles_dir = config.output_dir / "profiles"
                 abs_output = (

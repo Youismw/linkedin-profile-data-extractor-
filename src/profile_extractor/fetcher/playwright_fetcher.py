@@ -1,4 +1,15 @@
-"""Playwright-based fetcher utilizing stored session state and incremental scrolling."""
+"""Playwright-based fetcher utilizing stored session state and incremental scrolling.
+
+Technical Highlights:
+1. Reusable Browser Lifecycle: Launches Chromium once per pipeline run and
+   shares the authenticated context across profiles for high throughput.
+2. Container-Targeted Lazy Scrolling: LinkedIn's SPA layout nests the scrollable
+   viewport inside `<main id="workspace">` rather than `window`. This fetcher
+   progressively scrolls both `main` and `window`, triggering intersection
+   observers and GraphQL queries for deep sections (Experience, Education, Skills).
+3. In-Flight Authwall Recovery: If a session expires mid-run, automatically
+   prompts the user, opens a login window, captures fresh cookies, and retries.
+"""
 
 import sys
 from datetime import UTC, datetime
@@ -47,7 +58,12 @@ class PlaywrightFetcher:
         self._context: BrowserContext | None = None
 
     def _ensure_browser(self) -> BrowserContext:
-        """Initialize playwright browser and context if not already active."""
+        """Initialize playwright browser and context if not already active.
+
+        Injects saved storage state (cookies) and desktop user agent to bypass
+        mobile web views and maintain session continuity.
+        """
+        # Reconnect if browser crashed or disconnected
         if self._browser is not None and not self._browser.is_connected():
             self.close()
 
@@ -59,6 +75,7 @@ class PlaywrightFetcher:
 
         has_auth = self.auth_state_path and self.auth_state_path.is_file()
         if has_auth:
+            # Load stored session cookies from .auth/state.json
             self._context = self._browser.new_context(
                 storage_state=str(self.auth_state_path),
                 user_agent=(
@@ -75,7 +92,15 @@ class PlaywrightFetcher:
         return self._context
 
     def fetch(self, url: str) -> FetchResult:
-        """Navigate to the profile URL, scroll for lazy loaded sections, and detect outcome."""
+        """Navigate to the profile URL, scroll for lazy loaded sections, and detect outcome.
+
+        Execution stages:
+        1. Opens a new tab with hard timeout.
+        2. Navigates to target URL with 'domcontentloaded' wait.
+        3. Executes progressive multi-step scrolling on `<main>` and `window`.
+        4. Detects page status (OK, NOT_FOUND, NOT_VISIBLE, BLOCKED).
+        5. If session expired, triggers interactive relogin and retries.
+        """
         logger = get_logger()
         logger.debug("Fetching profile via Playwright: %s", url)
         now_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -89,7 +114,11 @@ class PlaywrightFetcher:
                 response = page.goto(url, wait_until="domcontentloaded")
                 status_code = response.status if response else None
 
-                # Progressive scrolling targeting both <main> and window to load lazy sections
+                # --------------------------------------------------------------
+                # Progressive Container Scrolling:
+                # Scrolls document.querySelector('main') and window by 600px
+                # increments to trigger GraphQL lazy loading of lower sections.
+                # --------------------------------------------------------------
                 for _ in range(self.max_scroll_steps):
                     scroll_info = page.evaluate("""() => {
                         const m = document.querySelector('main')
@@ -105,9 +134,11 @@ class PlaywrightFetcher:
                     }""")
                     page.wait_for_timeout(self.scroll_step_delay_ms)
                     if isinstance(scroll_info, dict):
+                        # Stop scrolling early if container reached the bottom
                         if not scroll_info.get("moved") and scroll_info.get("atBottom"):
                             break
 
+                # Settle delay for DOM mutations to finish rendering
                 page.wait_for_timeout(1000)
 
                 current_url = page.url
@@ -120,7 +151,11 @@ class PlaywrightFetcher:
                     status_code=status_code,
                 )
 
-                # If session has expired (authwall detected), prompt to relogin and retry
+                # --------------------------------------------------------------
+                # In-Flight Authwall Recovery:
+                # If session expired mid-batch, prompt user, pop browser login,
+                # save updated .auth/state.json, and retry fetching this profile.
+                # --------------------------------------------------------------
                 if (
                     status == Status.UNREACHABLE
                     and reason == Reason.NOT_VISIBLE
@@ -141,7 +176,7 @@ class PlaywrightFetcher:
                     self._allow_relogin = False
                     return self.fetch(url)
 
-                # Optional debug dumping of raw HTML (fixtures creation)
+                # Optional debug dumping of raw HTML fixtures
                 if self.save_raw_html_dir:
                     try:
                         slug = extract_slug(url)
@@ -170,6 +205,7 @@ class PlaywrightFetcher:
                     detail="Page navigation timed out",
                 )
             finally:
+                # Always close tab to prevent memory leaks
                 page.close()
 
         except Exception as e:
@@ -182,7 +218,7 @@ class PlaywrightFetcher:
             )
 
     def close(self) -> None:
-        """Release browser context and shut down Playwright."""
+        """Release browser context and shut down Playwright processes cleanly."""
         try:
             if self._context:
                 try:

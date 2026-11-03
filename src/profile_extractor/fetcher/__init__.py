@@ -1,4 +1,12 @@
-"""Fetcher package: protocols, implementations, detection, and login helper."""
+"""Fetcher package: protocols, implementations, detection, and login helper.
+
+Design:
+- `Fetcher` (Protocol): Enforces structural subtyping so any fetcher (Playwright,
+  HTTP requests, official LinkedIn API, or test stub) can be plugged in without
+  modifying orchestrator logic.
+- `FakeFetcher`: In-memory test fixture used for offline smoke tests, unit tests,
+  and CI pipelines without internet connectivity or browser installation.
+"""
 
 from collections.abc import Mapping
 from typing import Protocol

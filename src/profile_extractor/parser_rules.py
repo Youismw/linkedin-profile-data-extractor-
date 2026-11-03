@@ -1,13 +1,25 @@
 """Centralized selectors, heading signatures, and DOM matching rules for parsing.
 
-All layout-specific patterns and heading variations are maintained strictly in this file,
-ensuring layout changes are a single-file modification without generated CSS classes.
+Design Philosophy:
+- Zero Obfuscated CSS Classes: LinkedIn frequently regenerates hashed CSS
+  classnames (e.g., `artdeco-button--tertiary-7x9z`). Relying on them creates
+  fragile parsers that break weekly.
+- Semantic HTML & ARIA Attributes: This module targets stable structural tokens:
+  HTML tags (`h1`, `h2`, `section`), ARIA landmarks (`role="listitem"`),
+  component keys (`LazyColumn`), and human-visible section headings.
+- Single-File Maintenance: If LinkedIn introduces a new heading variation (e.g.
+  'Career History' instead of 'Experience'), updating the regex list here adapts
+  the entire pipeline without modifying parsing logic.
 """
 
 import re
 from typing import Final
 
-# Heading keywords (case-insensitive regex patterns matching word boundaries or variations)
+# ------------------------------------------------------------------------------
+# Core Section Heading Regex Patterns
+# Uses \b word boundaries so "Skills (47)" matches without matching unrelated text
+# ------------------------------------------------------------------------------
+
 ABOUT_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"^about\b", re.IGNORECASE),
     re.compile(r"^summary\b", re.IGNORECASE),
@@ -28,7 +40,11 @@ SKILLS_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"^featured skills\b", re.IGNORECASE),
 ]
 
-# Sidebar recommendations, ad popups, and non-profile widget patterns to exclude
+# ------------------------------------------------------------------------------
+# Noise Filter Patterns
+# Excludes sidebar widgets, recommendations, and notification badges
+# ------------------------------------------------------------------------------
+
 SKIP_SECTION_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(
         r"^(more profiles for you|people you may know|"
@@ -38,18 +54,18 @@ SKIP_SECTION_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"^\d+\s+notification", re.IGNORECASE),
 ]
 
-# Pronoun patterns in top card
+# Top card pronoun badges (e.g., '(He/Him)') filtered so they aren't taken as headline
 PRONOUN_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^[\(\[]?(?:he/him|she/her|they/them|he/they|she/they)[\)\]]?$",
     re.IGNORECASE,
 )
 
-# Common UI buttons and noise lines within items
+# Interactive button labels filtered from experience and education raw text
 NOISE_LINE_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"^(show all|see credential|show credential|edit)\b", re.IGNORECASE),
 ]
 
-# Section IDs or data attributes that LinkedIn uses stably
+# Stable section IDs used in LinkedIn DOM
 KNOWN_SECTION_IDS: Final[dict[str, str]] = {
     "about": "about",
     "experience": "experience",
@@ -57,7 +73,7 @@ KNOWN_SECTION_IDS: Final[dict[str, str]] = {
     "skills": "skills",
 }
 
-# Elements to strip before text extraction (scripts, styles, SVGs, accessibility hidden text)
+# Non-visible elements stripped from the DOM before text parsing
 STRIP_TAGS: Final[list[str]] = [
     "script",
     "style",
@@ -66,7 +82,7 @@ STRIP_TAGS: Final[list[str]] = [
     "template",
 ]
 
-# Attribute selectors for name and headline fallback
+# Structural selectors for Top Card fallback
 NAME_TAGS: Final[list[str]] = ["h1"]
 HEADLINE_SELECTORS: Final[list[str]] = [
     ".text-body-medium",
@@ -78,4 +94,3 @@ LOCATION_SELECTORS: Final[list[str]] = [
     "[data-field='location']",
     "span.location",
 ]
-

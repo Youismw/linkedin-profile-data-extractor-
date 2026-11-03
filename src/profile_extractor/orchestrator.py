@@ -1,4 +1,18 @@
-"""Pipeline orchestrator for LinkedIn profile extraction."""
+"""Pipeline orchestrator for LinkedIn profile extraction.
+
+This module coordinates the entire workflow:
+1. Input Ingestion: Invokes reader.py to parse the Excel spreadsheet.
+2. Error Isolation: Wraps each candidate visit in a try/except block so a failure
+   on one candidate never crashes the pipeline for remaining candidates.
+3. Polite Pacing: Injects random jitter delays between profile visits to mimic
+   human browsing and protect employee accounts from rate limits.
+4. Circuit Breaker: Halts immediately if bot challenge/CAPTCHA is detected
+   (when stop_on_block=True), marking remaining rows as 'not_processed'.
+5. Clean Output: Purges stale JSON files from prior runs so only fresh data exists.
+6. Audit Generation: Writes individual JSON files, unreachable_profiles.xlsx,
+   and mathematical run_summary.json.
+7. Safe Teardown: Always releases browser resources via `fetcher.close()` in a `finally` block.
+"""
 
 import random
 import time
@@ -30,17 +44,22 @@ def run_pipeline(
 ) -> RunSummary:
     """Execute the end-to-end extraction pipeline.
 
-    1. Reads input Excel file.
-    2. Feeds valid rows into fetcher with error isolation and polite pacing.
-    3. Handles blocked stop condition.
-    4. Writes profile JSONs, unreachable reports, and summary atomically.
-    5. Releases fetcher resources safely.
+    Parameters:
+        config: ExtractorConfig containing paths, timeouts, and delay bounds.
+        fetcher: Concrete Fetcher implementation (PlaywrightFetcher or FakeFetcher).
+        sleep_fn: Injected sleep function (time.sleep in prod, mock in tests).
+
+    Returns:
+        RunSummary object with fully reconciled audit statistics.
     """
     logger = get_logger()
     start_time = datetime.now(UTC)
     started_at_str = start_time.isoformat().replace("+00:00", "Z")
     logger.info("Starting pipeline run on %s", config.input_file)
 
+    # --------------------------------------------------------------------------
+    # 1. Read Input Spreadsheet
+    # --------------------------------------------------------------------------
     try:
         read_result = read_profile_urls(config.input_file)
     except Exception as e:
@@ -49,8 +68,9 @@ def run_pipeline(
         raise
 
     all_rows = read_result.rows
+
+    # Apply max_profiles limit if configured
     if config.max_profiles and config.max_profiles > 0:
-        # If max_profiles is configured, cap the candidate rows
         valid_count = 0
         capped_rows = []
         for r in all_rows:
@@ -73,7 +93,10 @@ def run_pipeline(
     not_processed_count = 0
     unreachable_records: list[UnreachableRecord] = []
 
-    # Record invalid URLs immediately (invalid URLs have no slug and appear only in Excel report)
+    # --------------------------------------------------------------------------
+    # 2. Record Malformed / Invalid URLs Immediately
+    # Invalid URLs appear in unreachable_profiles.xlsx without creating JSON files
+    # --------------------------------------------------------------------------
     for inv in invalid_rows:
         unreachable_count += 1
         unreachable_by_reason[Reason.INVALID_URL.value] = (
@@ -92,17 +115,25 @@ def run_pipeline(
 
     num_valid = len(valid_rows)
     stop_triggered = False
+
+    # --------------------------------------------------------------------------
+    # 3. Prepare Clean Output Directory
+    # Purges leftover .json files from previous runs to guarantee fresh data
+    # --------------------------------------------------------------------------
     profiles_dir = config.output_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
-    # Clear stale profile JSONs from prior runs so only current run results exist
     for stale_json in profiles_dir.glob("*.json"):
         try:
             stale_json.unlink()
         except OSError:
             pass
 
+    # --------------------------------------------------------------------------
+    # 4. Processing Loop Across Valid Candidate Rows
+    # --------------------------------------------------------------------------
     try:
         for idx, row in enumerate(valid_rows):
+            # If circuit breaker was triggered by a bot challenge, skip remaining rows
             if stop_triggered:
                 not_processed_count += 1
                 logger.info("Row %d: skipped (pipeline stopped after block)", row.row_number)
@@ -119,9 +150,11 @@ def run_pipeline(
             )
 
             try:
+                # Retrieve profile HTML via Playwright
                 fetch_res = fetcher.fetch(url)
 
                 if fetch_res.status == Status.OK:
+                    # Parse DOM into structured ProfileDocument
                     doc = parse_profile(
                         source_url=url,
                         slug=slug,
@@ -135,6 +168,7 @@ def run_pipeline(
                         ok_count += 1
                         logger.info("Row %d: ok", row.row_number)
                     else:
+                        # Fallback if parser could not identify candidate name/headline
                         reason = doc.meta.reason or Reason.PARSE_FAILED
                         unreachable_count += 1
                         unreachable_by_reason[reason.value] = (
@@ -152,6 +186,7 @@ def run_pipeline(
                         logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
 
                 else:
+                    # Retrieval failed (NOT_FOUND, NOT_VISIBLE, BLOCKED, TIMEOUT)
                     reason = fetch_res.reason or Reason.UNEXPECTED_ERROR
                     unreachable_count += 1
                     unreachable_by_reason[reason.value] = (
@@ -166,6 +201,7 @@ def run_pipeline(
                             detail=fetch_res.detail,
                         )
                     )
+                    # Persist unreachable stub document adhering to schema contract
                     doc = parse_profile(
                         source_url=url,
                         slug=slug,
@@ -177,6 +213,7 @@ def run_pipeline(
                     write_profile_json(doc, profiles_dir)
                     logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
 
+                    # Circuit breaker: halt immediately upon security checkpoint
                     if config.stop_on_block and reason == Reason.BLOCKED:
                         logger.warning(
                             "Row %d: Block detected! Halting run as stop_on_block=True",
@@ -185,6 +222,7 @@ def run_pipeline(
                         stop_triggered = True
 
             except Exception as row_exc:
+                # Isolate unexpected runtime exceptions so one candidate cannot kill the batch
                 logger.error(
                     "Row %d: unexpected error during processing: %s",
                     row.row_number,
@@ -214,16 +252,19 @@ def run_pipeline(
                 )
                 write_profile_json(doc, profiles_dir)
 
-            # Apply polite pacing delay only between profiles, never after the final profile
+            # Polite pacing: random delay between min and max bounds (skip after last profile)
             if idx < num_valid - 1 and not stop_triggered:
                 delay = random.uniform(config.delay_seconds_min, config.delay_seconds_max)
                 logger.info("Applying polite delay of %.1fs before next profile...", delay)
                 sleep_fn(delay)
 
     finally:
+        # Guarantee browser shutdown and process cleanup
         fetcher.close()
 
-    # Generate unreachable Excel report if any unreachable records occurred
+    # --------------------------------------------------------------------------
+    # 5. Generate Audit Reports and Mathematical Summary
+    # --------------------------------------------------------------------------
     write_unreachable_report(unreachable_records, config.output_dir)
 
     end_time = datetime.now(UTC)

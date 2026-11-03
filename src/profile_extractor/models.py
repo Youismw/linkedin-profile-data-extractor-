@@ -1,4 +1,10 @@
-"""Data contracts and Pydantic models for LinkedIn Profile Extractor."""
+"""Data contracts and Pydantic models for LinkedIn Profile Extractor.
+
+This module acts as the single source of truth for all data structures across
+the application. By defining explicit Pydantic models, we guarantee strict type
+validation, automated JSON serialization, and immutable contracts between the
+input reader, DOM parser, storage writers, and external consumers.
+"""
 
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -6,16 +12,35 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# ==============================================================================
+# Status and Error Classifications
+# ==============================================================================
+
 
 class Status(StrEnum):
-    """Profile retrieval / processing status."""
+    """Binary profile retrieval outcome according to project requirements.
+
+    Attributes:
+        OK: Profile was successfully retrieved and parsed.
+        UNREACHABLE: Profile could not be retrieved, viewed, or parsed.
+    """
 
     OK = "ok"
     UNREACHABLE = "unreachable"
 
 
 class Reason(StrEnum):
-    """Reason for profile being unreachable."""
+    """Categorized root causes when a profile is unreachable.
+
+    Matches the strict error taxonomy mandated in the project specification:
+        INVALID_URL: Malformed link, wrong domain, or syntax error in spreadsheet.
+        NOT_FOUND: LinkedIn returned HTTP 404 / 'Profile Not Found'.
+        NOT_VISIBLE: Authwall, private profile, or network redirect to login.
+        BLOCKED: Bot detection challenge, CAPTCHA, or HTTP 429 / 999 response.
+        TIMEOUT: Page load or element rendering exceeded configured deadline.
+        PARSE_FAILED: Page loaded but candidate name/headline could not be found.
+        UNEXPECTED_ERROR: Unhandled system exception or runtime failure.
+    """
 
     INVALID_URL = "invalid_url"
     NOT_FOUND = "not_found"
@@ -26,8 +51,22 @@ class Reason(StrEnum):
     UNEXPECTED_ERROR = "unexpected_error"
 
 
+# ==============================================================================
+# Structured Profile Entities
+# ==============================================================================
+
+
 class ExperienceItem(BaseModel):
-    """Structured representation of a single work experience entry."""
+    """Structured representation of a single professional job position.
+
+    Attributes:
+        title: Extracted job title (e.g., 'Senior Software Engineer').
+        company: Company name or organization.
+        dates: Employment timeframe string (e.g., 'Sep 2023 - Present · 1 yr').
+        location: Work location and modality (e.g., 'Noida, India · Hybrid').
+        description: Role description, achievements, or project details.
+        raw: Full unparsed text string preserved for audit integrity.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -36,22 +75,35 @@ class ExperienceItem(BaseModel):
     dates: str | None = None
     location: str | None = None
     description: str | None = None
+    # 'raw' guarantees no information loss even if DOM parsing heuristic slips
     raw: str = ""
 
 
 class EducationItem(BaseModel):
-    """Structured representation of a single education entry."""
+    """Structured representation of a single educational qualification.
+
+    Attributes:
+        school: College, university, or institution name.
+        degree: Degree, diploma, or field of study.
+        dates: Enrollment period or graduation year.
+        raw: Full unparsed text string preserved for audit integrity.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     school: str | None = None
     degree: str | None = None
     dates: str | None = None
+    # 'raw' preserves exact honors, grades, and activities
     raw: str = ""
 
 
 class OtherSection(BaseModel):
-    """An unmapped or additional section captured from the page."""
+    """Unmapped or miscellaneous profile section captured from the DOM.
+
+    Captures auxiliary sections like 'Licenses & Certifications', 'Projects',
+    'Volunteering', 'Patents', 'Languages', or 'Activity' without data loss.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -60,7 +112,11 @@ class OtherSection(BaseModel):
 
 
 class Profile(BaseModel):
-    """Structured important fields of a LinkedIn profile."""
+    """Core professional attributes extracted from a candidate's profile.
+
+    Fields are Optional to support candidates with sparse or partial profiles.
+    Missing fields are tracked separately in the Meta block.
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -73,8 +129,23 @@ class Profile(BaseModel):
     skills: list[str] | None = None
 
 
+# ==============================================================================
+# Document Metadata & Root Document Schema
+# ==============================================================================
+
+
 class Meta(BaseModel):
-    """Metadata describing the profile extraction."""
+    """Metadata block recording extraction provenance and quality metrics.
+
+    Attributes:
+        schema_version: Contract specification version ('1.0').
+        source_url: Canonical LinkedIn URL that was requested.
+        slug: Normalized unique handle extracted from the profile URL.
+        status: Execution status ('ok' or 'unreachable').
+        reason: Specific reason enum if unreachable, else None.
+        fetched_at: ISO 8601 UTC timestamp of when data was pulled.
+        missing_fields: List of expected core fields that had no data in DOM.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -90,7 +161,14 @@ class Meta(BaseModel):
 
 
 class ProfileDocument(BaseModel):
-    """Complete output document written to JSON for each profile."""
+    """Root JSON document persisted to disk for every visited profile.
+
+    Adheres strictly to the JSON schema contract:
+    - Meta block contains provenance and missing fields array.
+    - Profile block contains non-null structured core fields.
+    - Other sections contains all remaining content.
+    - Raw text contains the unedited text dump of the entire profile.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -102,9 +180,11 @@ class ProfileDocument(BaseModel):
     def to_serializable_dict(self) -> dict[str, Any]:
         """Convert document to a dictionary adhering strictly to the contract.
 
-        Omits missing important fields (None values) from the profile object.
-        For unreachable profiles, profile is an empty dict and other_sections is an empty list.
+        Rule 1: If unreachable, 'profile' is {} and 'other_sections' is [].
+        Rule 2: If ok, missing fields (None values) are stripped from 'profile'.
+        Rule 3: 'raw_text' is appended at the very end of the JSON object.
         """
+        # Unreachable profile serialization
         if self.meta.status == Status.UNREACHABLE:
             res: dict[str, Any] = {
                 "meta": self.meta.model_dump(),
@@ -115,6 +195,7 @@ class ProfileDocument(BaseModel):
                 res["raw_text"] = self.raw_text
             return res
 
+        # Normal profile serialization
         profile_data = self.profile.model_dump(exclude_none=True)
         res = {
             "meta": self.meta.model_dump(),
@@ -126,8 +207,17 @@ class ProfileDocument(BaseModel):
         return res
 
 
+# ==============================================================================
+# Fetcher, Failure Report, and Run Summary Contracts
+# ==============================================================================
+
+
 class FetchResult(BaseModel):
-    """Outcome and raw payload returned by a Fetcher implementation."""
+    """Payload returned by any Fetcher implementation (Playwright or Fake).
+
+    Decouples raw HTML retrieval from parsing logic, enabling headless browser
+    swapping without touching business extraction code.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -143,7 +233,11 @@ class FetchResult(BaseModel):
 
 
 class UnreachableRecord(BaseModel):
-    """Record written to unreachable_profiles.xlsx."""
+    """Row record formatted for unreachable_profiles.xlsx.
+
+    Allows recruiters to immediately identify which candidates failed,
+    on which Excel row number, and the exact diagnosis why.
+    """
 
     input_row: int
     url_as_given: str
@@ -156,7 +250,10 @@ class UnreachableRecord(BaseModel):
 
 
 class RunSummary(BaseModel):
-    """Summary statistics written to run_summary.json at the end of a run."""
+    """Mathematical audit reconciliation written to run_summary.json.
+
+    Guarantees full accounting: rows_valid == ok + unreachable + not_processed.
+    """
 
     model_config = ConfigDict(extra="ignore")
 

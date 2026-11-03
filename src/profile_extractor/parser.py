@@ -1,4 +1,18 @@
-"""DOM parsing and structured profile extraction using BeautifulSoup."""
+"""DOM parsing and structured profile extraction using BeautifulSoup.
+
+Architecture & Parsing Strategy:
+1. Two-Tier Extraction:
+   - Structured Core Fields: name, headline, location, about, experience, education, skills.
+   - Complete Raw Text Dump: Appends unedited full text under 'raw_text' in each document.
+   - Preservation of Unmapped Sections: Unmapped sections (Licenses, Patents, Activity)
+     land cleanly in 'other_sections' so zero data is lost.
+2. Resilience against LinkedIn SPA Updates:
+   - Does NOT rely on fragile minified CSS classes (e.g. '.artdeco-card--compact-7d8').
+   - Targets semantic elements (`h1`, `h2`, `<section>`), component attributes
+     (`data-component-type="LazyColumn"`), and ARIA listitems (`role="listitem"`).
+3. Text Coverage Verification:
+   - Measures captured text against the entire page body text to ensure high fidelity.
+"""
 
 import re
 from collections.abc import Sequence
@@ -30,7 +44,7 @@ from profile_extractor.parser_rules import (
 
 
 def _clean_text(text: str | None) -> str:
-    """Normalize whitespace in extracted string."""
+    """Normalize whitespace in extracted strings (collapsing multiple spaces and newlines)."""
     if not text:
         return ""
     return re.sub(r"\s+", " ", text).strip()
@@ -43,28 +57,44 @@ def _matches_any_pattern(text: str, patterns: list[re.Pattern[str]]) -> bool:
 
 
 def _extract_section_heading(section: Tag) -> str:
-    """Find and return the heading text of a section."""
-    # Check for direct h2, h3, header, or aria-label
+    """Find and return the heading text of a section.
+
+    Inspection cascade:
+    1. Direct <h2>, <h3>, or <header> tags.
+    2. 'aria-label' attribute on the section container.
+    3. 'id' attribute on the section container.
+    """
+    # 1. Check for standard heading tags inside section
     for heading_tag in section.find_all(["h2", "h3", "header"], recursive=True):
         txt = _clean_text(heading_tag.get_text())
         if txt:
             return txt
-    # Check aria-label or id attribute
+
+    # 2. Check aria-label attribute
     aria = section.get("aria-label")
     if aria and isinstance(aria, str):
         return _clean_text(aria)
+
+    # 3. Check section id attribute
     sec_id = section.get("id")
     if sec_id and isinstance(sec_id, str):
         return _clean_text(sec_id)
+
     return ""
 
 
 def _get_section_items(sec: Tag) -> list[Tag]:
-    """Extract item tags (li, role=listitem, or LazyColumn items) from a section."""
+    """Extract individual item tags (li, role=listitem, or LazyColumn elements).
+
+    Handles both legacy HTML (<ul><li>) and LinkedIn's redesign
+    (<div data-component-type="LazyColumn"><div role="listitem">).
+    """
+    # Strategy 1: Standard <li> list items
     lis = sec.find_all("li", recursive=True)
     if lis:
         return [li for li in lis if isinstance(li, Tag)]
 
+    # Strategy 2: Modern LinkedIn LazyColumn component
     lazy_col = sec.select_one('[data-component-type="LazyColumn"]')
     if lazy_col:
         items = [
@@ -81,6 +111,7 @@ def _get_section_items(sec: Tag) -> list[Tag]:
         if direct_children:
             return direct_children
 
+    # Strategy 3: Direct ARIA listitems within section
     role_items = [el for el in sec.select('[role="listitem"]') if isinstance(el, Tag)]
     if role_items:
         return role_items
@@ -89,7 +120,13 @@ def _get_section_items(sec: Tag) -> list[Tag]:
 
 
 def _parse_experience_item(tag: Tag) -> ExperienceItem:
-    """Extract structured fields and complete raw text from an experience item."""
+    """Extract structured fields and complete raw text from a work experience entry.
+
+    Heuristic Breakdown:
+    - Extracts stripped strings, ignoring UI button noise ('show all', 'edit').
+    - Handles standard single-role entries (Title, Company, Dates, Location, Description).
+    - Handles multi-role entries at the same company (where line 1 indicates total duration).
+    """
     lines = [
         _clean_text(line)
         for line in tag.stripped_strings
@@ -104,10 +141,10 @@ def _parse_experience_item(tag: Tag) -> ExperienceItem:
     description: str | None = None
 
     if lines:
-        # Multi-role at company heuristic: line 1 has duration words ("22 yrs 8 mos")
+        # Multi-role heuristic: line 1 has duration words ("2 yrs 8 mos")
         has_duration = re.search(
             r"\b(?:yr|yrs|mo|mos|year|years|month|months)\b",
-            lines[1],
+            lines[1] if len(lines) > 1 else "",
             re.IGNORECASE,
         )
         if len(lines) > 1 and has_duration:
@@ -117,6 +154,7 @@ def _parse_experience_item(tag: Tag) -> ExperienceItem:
             if len(lines) > 4:
                 description = " ".join(lines[4:])
         else:
+            # Standard single-role layout
             title = lines[0]
             if len(lines) > 1:
                 company = lines[1]
@@ -138,7 +176,10 @@ def _parse_experience_item(tag: Tag) -> ExperienceItem:
 
 
 def _parse_education_item(tag: Tag) -> EducationItem:
-    """Extract structured fields and complete raw text from an education item."""
+    """Extract structured fields and complete raw text from an education entry.
+
+    Extracts: School / Institution, Degree / Major, Dates / Honors, and full raw string.
+    """
     lines = [
         _clean_text(line)
         for line in tag.stripped_strings
@@ -175,13 +216,21 @@ def parse_profile(
 ) -> ProfileDocument:
     """Parse raw profile HTML into a validated contract-compliant ProfileDocument.
 
-    Handles Status.UNREACHABLE, extracts structured profile fields and raw text copies,
-    routes unmapped content into other_sections, calculates missing_fields, and verifies
-    text coverage against the raw page body.
+    Pipeline stages:
+    1. Early return if profile was unreachable.
+    2. DOM cleanup (stripping scripts, styles, templates).
+    3. Raw text extraction (dump of all unedited visible text).
+    4. Top card extraction (Candidate Name, Headline, Location).
+    5. Section parsing (About, Experience, Education, Skills).
+    6. Unmapped section routing (Licenses, Activity, Patents -> other_sections).
+    7. Missing fields calculation against important_fields configuration.
+    8. Text coverage sanity verification.
     """
     logger = get_logger()
 
-    # 1. Handle Unreachable Status directly
+    # --------------------------------------------------------------------------
+    # 1. Handle Unreachable Status Directly
+    # --------------------------------------------------------------------------
     if status == Status.UNREACHABLE:
         reason_enum = Reason(reason) if reason else None
         return ProfileDocument(
@@ -196,6 +245,7 @@ def parse_profile(
             other_sections=[],
         )
 
+    # If HTML is empty or blank, mark as PARSE_FAILED
     if not html or not html.strip():
         return ProfileDocument(
             meta=Meta(
@@ -210,9 +260,12 @@ def parse_profile(
             raw_text=None,
         )
 
+    # --------------------------------------------------------------------------
+    # 2. Parse HTML and Strip Noise Elements
+    # --------------------------------------------------------------------------
     soup = BeautifulSoup(html, "lxml")
 
-    # Strip noisy elements (scripts, styles, templates)
+    # Strip scripts, stylesheets, templates, and SVGs
     for tag_name in STRIP_TAGS:
         for tag in soup.find_all(tag_name):
             tag.decompose()
@@ -224,7 +277,9 @@ def parse_profile(
     profile_container = soup.find("main") or body
     raw_text = profile_container.get_text(separator="\n", strip=True)
 
-    # 2. Top Card: Name, Headline, Location
+    # --------------------------------------------------------------------------
+    # 3. Top Card: Name, Headline, Location
+    # --------------------------------------------------------------------------
     name: str | None = None
     headline: str | None = None
     location: str | None = None
@@ -232,7 +287,7 @@ def parse_profile(
     main = soup.find("main") or soup
     top_card = None
 
-    # Filter out layout containers, nested carousels, and dialogs
+    # Filter out outer layout containers, nested carousels, and dialogs
     valid_sections: list[Tag] = []
     for sec in main.find_all("section"):
         if sec.get("aria-label") == "Primary content":
@@ -270,7 +325,7 @@ def parse_profile(
         if name and filtered:
             try:
                 name_idx = filtered.index(name)
-                # Headline: skip pronouns, dashes, and UI labels
+                # Headline: scan immediate lines after name, skipping pronouns and buttons
                 for cand in filtered[name_idx + 1 : name_idx + 4]:
                     if PRONOUN_PATTERN.match(cand):
                         continue
@@ -291,7 +346,7 @@ def parse_profile(
                     headline = cand
                     break
 
-                # Location
+                # Location: scan lines for geographic indicators
                 for cand in filtered[name_idx + 1 : name_idx + 7]:
                     if "," in cand or any(
                         kw in cand.lower()
@@ -345,7 +400,9 @@ def parse_profile(
             raw_text=raw_text,
         )
 
-    # 3. Section Extraction
+    # --------------------------------------------------------------------------
+    # 4. Section Parsing: About, Experience, Education, Skills, Others
+    # --------------------------------------------------------------------------
     about: str | None = None
     experience: list[ExperienceItem] | None = None
     education: list[EducationItem] | None = None
@@ -359,14 +416,14 @@ def parse_profile(
             continue
         seen_sections.add(id(sec))
 
-        # Skip top card
+        # Skip top card section
         if top_card and sec == top_card:
             continue
 
         heading = _extract_section_heading(sec)
         sec_id = str(sec.get("id") or "").lower()
 
-        # Skip sidebar recommendations and ad dialogs
+        # Skip sidebar recommendations, ads, and notification popups
         if _matches_any_pattern(heading, SKIP_SECTION_PATTERNS):
             continue
 
@@ -376,7 +433,7 @@ def parse_profile(
 
         items = _get_section_items(sec)
 
-        # Check About
+        # 4a. Check About
         if _matches_any_pattern(heading, ABOUT_PATTERNS) or sec_id == KNOWN_SECTION_IDS["about"]:
             body_text = _clean_text(sec.get_text())
             # Strip heading if present at start
@@ -388,7 +445,7 @@ def parse_profile(
                 about = body_text
             continue
 
-        # Check Experience
+        # 4b. Check Experience
         if (
             _matches_any_pattern(heading, EXPERIENCE_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["experience"]
@@ -402,7 +459,7 @@ def parse_profile(
                 experience = exp_items
             continue
 
-        # Check Education
+        # 4c. Check Education
         if (
             _matches_any_pattern(heading, EDUCATION_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["education"]
@@ -416,7 +473,7 @@ def parse_profile(
                 education = edu_items
             continue
 
-        # Check Skills
+        # 4d. Check Skills
         if _matches_any_pattern(heading, SKILLS_PATTERNS) or sec_id == KNOWN_SECTION_IDS["skills"]:
             skill_list: list[str] = []
             for it in items:
@@ -432,7 +489,7 @@ def parse_profile(
                 skills = skill_list
             continue
 
-        # Route any other visible section into other_sections
+        # 4e. Route any other visible section into other_sections
         sec_content = _clean_text(sec.get_text())
         if sec_content:
             if heading and sec_content.startswith(heading):
@@ -441,7 +498,9 @@ def parse_profile(
                 display_heading = heading or "Additional Information"
                 other_sections.append(OtherSection(heading=display_heading, text=sec_content))
 
-    # 4. Construct Profile Model
+    # --------------------------------------------------------------------------
+    # 5. Construct Profile Model
+    # --------------------------------------------------------------------------
     profile = Profile(
         name=name,
         headline=headline,
@@ -452,7 +511,9 @@ def parse_profile(
         skills=skills,
     )
 
-    # 5. Determine Missing Fields from Important Fields
+    # --------------------------------------------------------------------------
+    # 6. Determine Missing Fields from Important Fields Configuration
+    # --------------------------------------------------------------------------
     missing_fields: list[str] = []
     profile_data = profile.model_dump(exclude_none=True)
     for field in important_fields:
@@ -460,8 +521,9 @@ def parse_profile(
         if val is None or (isinstance(val, list) and len(val) == 0):
             missing_fields.append(field)
 
-    # 6. Text Coverage Check
-    # Compare visible text captured in output with visible text on the page
+    # --------------------------------------------------------------------------
+    # 7. Text Coverage Sanity Check
+    # --------------------------------------------------------------------------
     captured_pieces = [name or "", headline or "", location or "", about or ""]
     if experience:
         captured_pieces.extend(item.raw for item in experience)

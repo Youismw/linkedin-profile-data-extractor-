@@ -1,4 +1,13 @@
-"""Logging configuration ensuring privacy and structured execution logs."""
+"""Logging configuration ensuring privacy and structured execution logs.
+
+Privacy Architecture:
+- Adheres strictly to the Privacy Rule: Candidate names, emails, phone numbers,
+  and profile text bodies are NEVER logged to console or disk.
+- At INFO level, only operational metrics (row numbers, slug handles, status codes,
+  and step timings) are output.
+- Full raw URLs and technical HTTP payloads appear only at DEBUG level.
+- Console logs stream to sys.stdout; persistent audit logs are stored in logs/extractor.log.
+"""
 
 import logging
 import sys
@@ -11,31 +20,36 @@ def setup_logging(
     level: str = "INFO",
     log_dir: Path | str | None = "logs",
 ) -> logging.Logger:
-    """Configure structured logging for the application.
+    """Configure structured logging handlers and formatters.
 
-    Ensures that at INFO level only high-level row progress and outcomes are logged.
-    Full URLs appear only at DEBUG level. Profile content is never logged.
+    Parameters:
+        level: Log severity threshold string ('DEBUG', 'INFO', 'WARNING', 'ERROR').
+        log_dir: Directory to save persistent log files, or None for console-only.
+
+    Returns:
+        The configured root application Logger.
     """
     logger = logging.getLogger(LOGGER_NAME)
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     logger.setLevel(numeric_level)
 
-    # Avoid adding duplicate handlers on multiple setup calls
+    # Clear any pre-existing handlers to prevent duplicate lines if reconfigured
     if logger.handlers:
         logger.handlers.clear()
 
+    # Standard clean timestamped format
     formatter = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console Handler
+    # 1. Console Stream Handler (direct feedback in user's terminal)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # File Handler (if log_dir is provided)
+    # 2. File Handler (persistent audit log in logs/extractor.log)
     if log_dir:
         path = Path(log_dir)
         path.mkdir(parents=True, exist_ok=True)
@@ -48,5 +62,5 @@ def setup_logging(
 
 
 def get_logger() -> logging.Logger:
-    """Retrieve the application logger."""
+    """Retrieve the shared application logger instance."""
     return logging.getLogger(LOGGER_NAME)
