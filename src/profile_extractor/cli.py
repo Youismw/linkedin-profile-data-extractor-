@@ -130,10 +130,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             # Automatically pop open the output folder in Windows File Explorer
             try:
+                abs_output = config.output_dir.resolve()
                 if sys.platform == "win32":
-                    import os
+                    import subprocess
 
-                    os.startfile(str(config.output_dir))
+                    subprocess.Popen(["explorer.exe", str(abs_output)])
             except Exception:
                 pass
 
