@@ -106,21 +106,42 @@ $env:PYTHONPATH="src"
 > Storing LinkedIn passwords in files violates security best practices (CWE-256) and immediately triggers LinkedIn's anti-bot defense (visual CAPTCHAs, Arkose challenges, and 2FA SMS prompts) which fail under automation. Performing a 30-second manual login once allows genuine 2FA completion and creates a reusable session cookie file (`.auth/state.json`) that powers 100% headless automated extractions thereafter. In production, browser scraping is replaced with official API OAuth tokens.
 
 ### 2. Running Extraction
-```powershell
-$env:PYTHONPATH="src"
-# Standard execution (reads input_file from config.toml or default input/profiles.xlsx)
-.\.venv\Scripts\python.exe -m profile_extractor run --input input/profiles.xlsx --output output
 
-# Testing / Demo fallback without live browser (uses FakeFetcher)
-.\.venv\Scripts\python.exe -m profile_extractor run --input input/profiles.xlsx --output output --fake
+#### Quick Commands (Shortcuts)
+Two shortcut scripts are provided so you don't have to type long python commands or set environment variables:
+
+```powershell
+# 1. Default Run (reads input/profiles.xlsx -> outputs to output/)
+.\run
+
+# 2. Output to ANY folder anywhere on your computer
+.\run -o "C:\Users\ROHIT CHAUHAN\Desktop\Extracted Profiles"
+.\run -o "D:\MyData\Profiles"
+
+# 3. Simple positional syntax (input file, output folder)
+.\run input/profiles.xlsx "D:\Extracted Profiles"
+
+# 4. Fast mode (short delays for quick test batches)
+.\run --fast
+
+# 5. Offline Demo / Instant Test mode (< 1s execution)
+.\run --fake
 ```
 
-### CLI Arguments
+#### Full Python Command (Alternative)
+```powershell
+.\.venv\Scripts\python.exe -m profile_extractor run -i input/profiles.xlsx -o output
+```
+
+### CLI Arguments & Shorthands
+- `input_pos`: Optional positional input Excel path.
+- `output_pos`: Optional positional output directory anywhere on the machine.
 - `--input`, `-i`: Path to the input Excel spreadsheet (`.xlsx`).
-- `--output`, `-o`: Output folder for profile JSON files, reports, and summary.
+- `--output`, `-o`: Output folder (accepts any absolute or relative path anywhere on the machine).
 - `--config`, `-c`: Path to custom `config.toml`.
 - `--max-profiles`: Limit number of valid profiles processed in this run.
-- `--fake`: Run using `FakeFetcher` (useful for offline demonstration and CI testing).
+- `--fast`: Fast mode (minimal 0.5s–1.0s delays for quick testing).
+- `--fake`: Run using `FakeFetcher` (offline demonstration and CI testing).
 
 ---
 
