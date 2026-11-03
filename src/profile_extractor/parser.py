@@ -171,27 +171,64 @@ def parse_profile(
     headline: str | None = None
     location: str | None = None
 
-    h1 = soup.find("h1")
-    if h1:
-        name = _clean_text(h1.get_text())
+    main = soup.find("main") or soup
+    top_card = None
 
-    # Top card container (often the first section or container holding h1)
-    top_card = h1.find_parent("section") if h1 else None
+    # Strategy A: Check <h1> tags
+    h1 = soup.find("h1")
+    if h1 and _clean_text(h1.get_text()):
+        name = _clean_text(h1.get_text())
+        top_card = h1.find_parent("section")
+
+    # Strategy B: First section in <main> (LinkedIn logged-in profile top card)
+    main_sections = main.find_all("section")
+    if not top_card and main_sections:
+        top_card = main_sections[0]
+
     if top_card:
-        # Search for headline and location within top card
         top_lines = [_clean_text(s) for s in top_card.stripped_strings if _clean_text(s)]
-        if name and name in top_lines:
-            idx = top_lines.index(name)
-            if idx + 1 < len(top_lines):
-                headline = top_lines[idx + 1]
-            if idx + 2 < len(top_lines):
-                location = top_lines[idx + 2]
-    else:
-        # Fallback heuristic: find paragraphs / divs following h1
-        if h1:
-            next_el = h1.find_next(["div", "p", "span"])
-            if next_el:
-                headline = _clean_text(next_el.get_text())
+        # Filter out UI noise badges like "0 notifications" or "Ad Options"
+        filtered = [
+            line
+            for line in top_lines
+            if not re.search(r"^\d+\s+notification", line, re.I)
+            and not re.search(r"^ad\s+options", line, re.I)
+        ]
+
+        if not name and filtered:
+            name = filtered[0]
+
+        if name and filtered:
+            try:
+                name_idx = filtered.index(name)
+                if name_idx + 1 < len(filtered):
+                    headline = filtered[name_idx + 1]
+                for cand in filtered[name_idx + 2 : name_idx + 6]:
+                    if "," in cand or any(
+                        kw in cand.lower()
+                        for kw in [
+                            "area",
+                            "united",
+                            "india",
+                            "states",
+                            "germany",
+                            "uk",
+                            "canada",
+                            "california",
+                        ]
+                    ):
+                        location = cand
+                        break
+            except ValueError:
+                pass
+
+    # Strategy C: Title tag fallback ("Name | LinkedIn")
+    if not name and soup.title and soup.title.string:
+        raw_title = soup.title.string.strip()
+        if " | " in raw_title:
+            name = _clean_text(raw_title.split(" | ")[0])
+        elif " - " in raw_title:
+            name = _clean_text(raw_title.split(" - ")[0])
 
     # Gate requirement: return parse_failed if no name and headline can be found
     if not name and not headline:

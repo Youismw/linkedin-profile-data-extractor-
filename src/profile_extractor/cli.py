@@ -127,6 +127,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{summary.not_processed_count} Not Processed. "
                 f"Output saved to {summary.output_dir}"
             )
+
+            # Automatically pop open the output folder in Windows File Explorer
+            try:
+                if sys.platform == "win32":
+                    import os
+
+                    os.startfile(str(config.output_dir))
+            except Exception:
+                pass
+
             return 0
         except Exception as e:
             print(f"Error executing pipeline: {e}", file=sys.stderr)

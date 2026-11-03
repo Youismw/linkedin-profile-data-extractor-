@@ -122,8 +122,26 @@ def run_pipeline(
                         important_fields=config.important_fields,
                     )
                     write_profile_json(doc, config.output_dir)
-                    ok_count += 1
-                    logger.info("Row %d: ok", row.row_number)
+
+                    if doc.meta.status == Status.OK:
+                        ok_count += 1
+                        logger.info("Row %d: ok", row.row_number)
+                    else:
+                        reason = doc.meta.reason or Reason.PARSE_FAILED
+                        unreachable_count += 1
+                        unreachable_by_reason[reason.value] = (
+                            unreachable_by_reason.get(reason.value, 0) + 1
+                        )
+                        unreachable_records.append(
+                            UnreachableRecord(
+                                input_row=row.row_number,
+                                url_as_given=row.raw,
+                                slug=slug,
+                                reason=reason,
+                                detail="Parser could not extract candidate name/headline from DOM",
+                            )
+                        )
+                        logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
 
                 else:
                     reason = fetch_res.reason or Reason.UNEXPECTED_ERROR

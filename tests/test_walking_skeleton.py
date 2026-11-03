@@ -137,7 +137,7 @@ class TestWalkingSkeleton:
             "first-ok": FetchResult(
                 url="https://www.linkedin.com/in/first-ok/",
                 status=Status.OK,
-                html="<html>ok</html>",
+                html="<html><body><h1>First User</h1><p>Software Engineer</p></body></html>",
             ),
             "blocked-candidate": FetchResult(
                 url="https://www.linkedin.com/in/blocked-candidate/",
