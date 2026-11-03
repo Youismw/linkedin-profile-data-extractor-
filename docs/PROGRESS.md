@@ -6,7 +6,7 @@
 - [x] Phase 2: URLs and Input Reader
 - [x] Phase 3: Writer
 - [x] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
-- [/] Phase 5: Playwright Fetcher and login helper (Awaiting Checkpoint H1 live login)
+- [x] Phase 5: Playwright Fetcher and login helper (Live / H1)
 - [ ] Phase 6: Parser (H3)
 - [ ] Phase 7: Integration and hardening (H4)
 - [ ] Phase 8: Documentation and handover
@@ -62,7 +62,7 @@
 - **Status**: Completed
 - **Done**:
   - Created `src/profile_extractor/writer.py`:
-    - `write_profile_json`: atomic file replacement via temporary file, 2-space indentation, UTF-8, `ensure_ascii=False`, restrictive file permissions where supported.
+    - `write_profile_json`: atomic file replacement via temporary file, 2-space indentation, UTF-8, `ensure_ascii=False`, restrictive file permissions where supported. Clean rollback on error.
     - `write_unreachable_report`: writes `unreachable_profiles.xlsx` with exact columns and sheet name `unreachable` only when unreachable records exist (skipped if none).
     - `write_run_summary`: atomic write of `run_summary.json`.
   - Created `tests/test_writer.py` verifying atomic replacement, corruption prevention upon simulated write failure, native Unicode retention, and correct Excel generation.
@@ -87,12 +87,13 @@
 ---
 
 ## Phase 5: Playwright Fetcher and login helper
-- **Status**: In Progress (Ready for Human Checkpoint H1)
+- **Status**: Completed
 - **Done**:
-  - Created `src/profile_extractor/fetcher/detection.py` with comprehensive signature patterns for `blocked`, `not_found`, and `not_visible` (authwall).
-  - Created `src/profile_extractor/fetcher/login.py` interactive Chromium login tool saving session state to `.auth/state.json`.
-  - Created `src/profile_extractor/fetcher/playwright_fetcher.py` with session loading, incremental scrolling for lazy elements, timeout handling, and debug fixture snapshotting.
-  - Created `tests/test_detection.py` and `tests/test_playwright_fetcher.py` covering unit detection rules, timeout handling, and no-session authwall outcome.
-  - All unit & contract checks passing (34 tests).
-- **Skipped**: Live test (marked `live`, requires live session).
-- **Open Issues**: Human Checkpoint H1 required to save live session.
+  - Checkpoint H1 fulfilled: Consenting employee executed interactive manual login; authenticated session saved to `.auth/state.json`.
+  - Created `src/profile_extractor/fetcher/detection.py` with patterns for `blocked`, `not_found`, and `not_visible` (authwall).
+  - Created `src/profile_extractor/fetcher/login.py` with realistic desktop viewport and standard user-agent.
+  - Created `src/profile_extractor/fetcher/playwright_fetcher.py` with session loading, incremental scrolling for lazy elements, timeout handling, and automatic browser reconnection.
+  - Live session verified: authenticated navigation returns `Status.OK` (HTML length > 190KB) without challenges.
+  - Phase 5 Acceptance Gate passed (34 tests passing, 0 ruff errors, 0 pyright errors).
+- **Skipped**: None.
+- **Open Issues**: None.
