@@ -97,6 +97,7 @@ class ProfileDocument(BaseModel):
     meta: Meta
     profile: Profile = Field(default_factory=Profile)
     other_sections: list[OtherSection] = Field(default_factory=list)
+    raw_text: str | None = None
 
     def to_serializable_dict(self) -> dict[str, Any]:
         """Convert document to a dictionary adhering strictly to the contract.
@@ -105,18 +106,24 @@ class ProfileDocument(BaseModel):
         For unreachable profiles, profile is an empty dict and other_sections is an empty list.
         """
         if self.meta.status == Status.UNREACHABLE:
-            return {
+            res: dict[str, Any] = {
                 "meta": self.meta.model_dump(),
                 "profile": {},
                 "other_sections": [],
             }
+            if self.raw_text is not None:
+                res["raw_text"] = self.raw_text
+            return res
 
         profile_data = self.profile.model_dump(exclude_none=True)
-        return {
+        res = {
             "meta": self.meta.model_dump(),
             "profile": profile_data,
             "other_sections": [section.model_dump() for section in self.other_sections],
         }
+        if self.raw_text is not None:
+            res["raw_text"] = self.raw_text
+        return res
 
 
 class FetchResult(BaseModel):

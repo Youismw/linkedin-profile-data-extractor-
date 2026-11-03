@@ -207,6 +207,7 @@ def parse_profile(
             ),
             profile=Profile(),
             other_sections=[],
+            raw_text=None,
         )
 
     soup = BeautifulSoup(html, "lxml")
@@ -218,6 +219,10 @@ def parse_profile(
 
     body = soup.find("body") or soup
     total_visible_text = _clean_text(body.get_text())
+
+    # Raw text dump: unedited visible text from the profile container
+    profile_container = soup.find("main") or body
+    raw_text = profile_container.get_text(separator="\n", strip=True)
 
     # 2. Top Card: Name, Headline, Location
     name: str | None = None
@@ -337,6 +342,7 @@ def parse_profile(
             ),
             profile=Profile(),
             other_sections=[],
+            raw_text=raw_text,
         )
 
     # 3. Section Extraction
@@ -487,4 +493,5 @@ def parse_profile(
         ),
         profile=profile,
         other_sections=other_sections,
+        raw_text=raw_text,
     )

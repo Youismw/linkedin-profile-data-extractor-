@@ -66,6 +66,11 @@ class TestParser:
         assert "Distributed Systems" in doc.profile.skills
         assert "Python" in doc.profile.skills
 
+        # Raw text dump
+        assert doc.raw_text is not None
+        assert "Renée Björk-Müller" in doc.raw_text
+        assert "raw_text" in doc.to_serializable_dict()
+
     def test_sparse_profile_fixture(self) -> None:
         """Verify sparse profile accurately computes missing_fields and contract serialization."""
         html = (FIXTURES_DIR / "sparse_profile.html").read_text(encoding="utf-8")
