@@ -7,7 +7,7 @@
 - [x] Phase 3: Writer
 - [x] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
 - [x] Phase 5: Playwright Fetcher and login helper (Live / H1)
-- [ ] Phase 6: Parser (H3)
+- [x] Phase 6: Parser (H3)
 - [ ] Phase 7: Integration and hardening (H4)
 - [ ] Phase 8: Documentation and handover
 
@@ -54,7 +54,7 @@
   - Created `tests/test_urls_and_reader.py` with over 20 URL valid/invalid variations, header/no-header/blank/hyperlink/duplicate/single-row cases, and 1000-row benchmark (passed in ~0.3s vs <2.0s limit).
   - Phase 2 Acceptance Gate passed (17 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
-- **Open Issues**: None (awaiting real sample Excel file at checkpoint H2).
+- **Open Issues**: None.
 
 ---
 
@@ -95,5 +95,25 @@
   - Created `src/profile_extractor/fetcher/playwright_fetcher.py` with session loading, incremental scrolling for lazy elements, timeout handling, and automatic browser reconnection.
   - Live session verified: authenticated navigation returns `Status.OK` (HTML length > 190KB) without challenges.
   - Phase 5 Acceptance Gate passed (34 tests passing, 0 ruff errors, 0 pyright errors).
+- **Skipped**: None.
+- **Open Issues**: None.
+
+---
+
+## Phase 6: Parser
+- **Status**: Completed
+- **Done**:
+  - Checkpoint H3 confirmed: default important fields (`name`, `headline`, `location`, `about`, `experience`, `education`, `skills`).
+  - Created `src/profile_extractor/parser_rules.py` isolating heading matching regex and stable attribute patterns.
+  - Created `src/profile_extractor/parser.py`:
+    - Robust extraction of structured fields (`name`, `headline`, `location`, `about`, `experience`, `education`, `skills`).
+    - Raw text copies retained for each experience and education item.
+    - Unmapped sections safely routed to `other_sections`.
+    - Automated missing_fields computation against configured list.
+    - Low text coverage verification warning.
+    - `parse_failed` triggered when no name/headline can be detected.
+  - Created synthetic test fixtures: `full_profile.html`, `sparse_profile.html`, `unusual_section_profile.html`.
+  - Created `tests/test_parser.py`: 5 comprehensive tests validating Unicode, missing fields, unmapped sections, idempotence, and parse failure handling.
+  - Phase 6 Acceptance Gate passed (39 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.
