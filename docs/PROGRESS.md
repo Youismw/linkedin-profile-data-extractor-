@@ -5,7 +5,7 @@
 - [x] Phase 1: Contracts
 - [x] Phase 2: URLs and Input Reader
 - [x] Phase 3: Writer
-- [ ] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
+- [x] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
 - [ ] Phase 5: Playwright Fetcher and login helper (Live / H1)
 - [ ] Phase 6: Parser (H3)
 - [ ] Phase 7: Integration and hardening (H4)
@@ -67,5 +67,19 @@
     - `write_run_summary`: atomic write of `run_summary.json`.
   - Created `tests/test_writer.py` verifying atomic replacement, corruption prevention upon simulated write failure, native Unicode retention, and correct Excel generation.
   - Phase 3 Acceptance Gate passed (23 total tests passing, 0 ruff errors, 0 pyright errors).
+- **Skipped**: None.
+- **Open Issues**: None.
+
+---
+
+## Phase 4: Walking Skeleton
+- **Status**: Completed
+- **Done**:
+  - Created `src/profile_extractor/fetcher/__init__.py` with `Fetcher` protocol and configurable `FakeFetcher`.
+  - Created `src/profile_extractor/parser.py` contract stub fulfilling schema requirements and calculating missing fields.
+  - Created `src/profile_extractor/orchestrator.py` with row-level failure isolation, polite pacing (injected sleep without delay after the final row), and `stop_on_block` handling.
+  - Created `src/profile_extractor/cli.py` with `run` and `login` subcommands.
+  - Created `tests/test_walking_skeleton.py` covering mixed outcomes (ok, not_found, not_visible, blocked, crashed exceptions), verifying `stop_on_block` behavior, no post-last delay, atomic overwrite on rerun, and CLI invocation.
+  - Phase 4 Acceptance Gate passed (27 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.
