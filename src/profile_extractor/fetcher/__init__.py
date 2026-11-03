@@ -1,5 +1,6 @@
 """Fetcher package: protocols, implementations, detection, and login helper."""
 
+from collections.abc import Mapping
 from typing import Protocol
 
 from profile_extractor.fetcher.detection import detect_outcome
@@ -26,10 +27,10 @@ class FakeFetcher:
 
     def __init__(
         self,
-        outcomes: dict[str, FetchResult | Exception] | None = None,
+        outcomes: Mapping[str, FetchResult | Exception] | None = None,
         default_status: Status = Status.OK,
     ) -> None:
-        self.outcomes: dict[str, FetchResult | Exception] = outcomes or {}
+        self.outcomes: Mapping[str, FetchResult | Exception] = outcomes or {}
         self.default_status = default_status
         self.fetched_urls: list[str] = []
         self.is_closed = False

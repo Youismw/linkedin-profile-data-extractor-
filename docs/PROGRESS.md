@@ -8,7 +8,7 @@
 - [x] Phase 4: Walking skeleton (Fetcher interface, Orchestrator, CLI)
 - [x] Phase 5: Playwright Fetcher and login helper (Live / H1)
 - [x] Phase 6: Parser (H3)
-- [ ] Phase 7: Integration and hardening (H4)
+- [x] Phase 7: Integration and hardening (H4)
 - [ ] Phase 8: Documentation and handover
 
 ---
@@ -115,5 +115,20 @@
   - Created synthetic test fixtures: `full_profile.html`, `sparse_profile.html`, `unusual_section_profile.html`.
   - Created `tests/test_parser.py`: 5 comprehensive tests validating Unicode, missing fields, unmapped sections, idempotence, and parse failure handling.
   - Phase 6 Acceptance Gate passed (39 total tests passing, 0 ruff errors, 0 pyright errors).
+- **Skipped**: None.
+- **Open Issues**: None.
+
+---
+
+## Phase 7: Integration and Hardening
+- **Status**: Completed
+- **Done**:
+  - Configured `PlaywrightFetcher` as default in CLI with helpful message if `.auth/state.json` is missing.
+  - Verified error isolation with mixed test workbook containing malformed link and nonexistent profile.
+  - Verified privacy audit: candidate personal data is never printed to logs or output to stdout.
+  - Verified `.gitignore` protects input, output, `.auth/state.json`, logs, and private fixtures.
+  - Verified atomic overwriting on repeated runs.
+  - Created `tests/test_integration_hardening.py` (3 new tests).
+  - Phase 7 Acceptance Gate passed (42 total tests passing, 0 ruff errors, 0 pyright errors).
 - **Skipped**: None.
 - **Open Issues**: None.

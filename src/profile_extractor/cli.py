@@ -99,6 +99,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.fake:
             fetcher = FakeFetcher()
         else:
+            if not config.auth_state_path.is_file():
+                print(
+                    f"Error: Authentication session not found at '{config.auth_state_path}'.\n"
+                    "Please run 'profile_extractor login' first, or use '--fake' for testing.",
+                    file=sys.stderr,
+                )
+                return 1
+
             fetcher = PlaywrightFetcher(
                 auth_state_path=config.auth_state_path,
                 headless=config.headless,
