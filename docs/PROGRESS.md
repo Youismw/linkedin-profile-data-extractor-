@@ -155,9 +155,13 @@
   - **Component Structure**: Redesigned LinkedIn sections utilize `data-component-type="LazyColumn"` and ARIA listitems (`role="listitem"`) rather than traditional `<ul><li>`. The parser now recursively inspects `li`, `LazyColumn`, and ARIA item elements.
   - **Layout Isolation**: Filtered out container layout wrappers (`aria-label="Primary content"`) and nested carousels (`aria-roledescription="carousel"`) from swallowing child sections or stealing top card metadata.
   - **Top Card Refinement**: Filtered out candidate pronouns (`He/Him`, `She/Her`, etc.) and `--` empty placeholders from being misidentified as professional headlines.
-  - **Windows Explorer Popup**: Added dual `os.startfile` and `explorer.exe` process invocation to ensure the output directory automatically pops open upon run completion.
+  - **Single Windows Explorer Popup**: Guarded folder pop-up with an `opened` state flag so `os.startfile` and `explorer.exe` fallback never spawn duplicate folder instances.
+  - **Path Memory & Persistence**: Implemented `.run_state.json` storage in `cli.py` to remember custom input spreadsheets and output directories across runs, eliminating the need to re-type paths.
+  - **Stale File Prevention**: Automatically purges stale `.json` files from prior runs at the start of each execution, and sorts input directory spreadsheets by newest modification timestamp to guarantee only fresh, active data is processed.
+  - **Raw Text Dump**: Added unedited full-profile visible text dump under `"raw_text"` at the end of each JSON profile document.
+  - **Auto-Relogin Flow**: Integrated proactive cookie expiration checks and reactive authwall recovery directly into `PlaywrightFetcher` and `cli.py`.
   - **Directory Isolation**: Stored all generated profile JSONs inside `output/profiles/<slug>.json`, keeping root `output/` clean for `run_summary.json` and reports.
-- **Verification**: Verified on real profiles (`rohit-chauhan-464b15262`, `gaurav-akoliya-aa8a3636a`, `sundarpichai`). All 42 unit tests, `ruff check .`, and `pyright src tests` pass with 0 errors.
+- **Verification**: Verified on real profiles (`rohit-chauhan-464b15262`, `gaurav-akoliya-aa8a3636a`, `sundarpichai`, and batch of 8 candidates). All 44 unit tests, `ruff check .`, and `pyright src tests` pass with 0 errors.
 
 ---
 

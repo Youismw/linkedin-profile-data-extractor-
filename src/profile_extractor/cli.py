@@ -1,6 +1,7 @@
 """Command Line Interface for LinkedIn Profile Extractor."""
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,6 +10,26 @@ from profile_extractor.config import load_config
 from profile_extractor.fetcher import FakeFetcher, PlaywrightFetcher, run_interactive_login
 from profile_extractor.logging_setup import setup_logging
 from profile_extractor.orchestrator import run_pipeline
+
+STATE_FILE = Path(".run_state.json")
+
+
+def _load_run_state() -> dict[str, str]:
+    """Load previously saved input and output locations."""
+    if STATE_FILE.is_file():
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_run_state(state: dict[str, str]) -> None:
+    """Save last used input and output locations for subsequent runs."""
+    try:
+        STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,10 +133,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         input_choice = args.input_file or args.input_pos
         output_choice = args.output_dir or args.output_pos
 
+        run_state = _load_run_state()
+
         if input_choice:
             input_path = Path(input_choice)
             if input_path.is_dir():
-                xlsx_files = list(input_path.glob("*.xlsx"))
+                xlsx_files = sorted(
+                    input_path.glob("*.xlsx"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
                 if xlsx_files:
                     input_path = xlsx_files[0]
             elif not input_path.is_file():
@@ -124,25 +151,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if desktop_fallback.is_file():
                     input_path = desktop_fallback
             overrides["input_file"] = input_path
+            run_state["last_input"] = str(input_path.resolve())
         else:
+            last_input = (
+                Path(run_state["last_input"]) if run_state.get("last_input") else None
+            )
             desktop_profile = Path.home() / "Desktop" / "profiles.xlsx"
             default_input = Path("input/profiles.xlsx")
+
             if desktop_profile.is_file() and (
-                not default_input.is_file()
-                or desktop_profile.stat().st_mtime > default_input.stat().st_mtime
+                not last_input
+                or not last_input.is_file()
+                or desktop_profile.stat().st_mtime > last_input.stat().st_mtime
             ):
                 overrides["input_file"] = desktop_profile
+                run_state["last_input"] = str(desktop_profile.resolve())
+            elif last_input and last_input.is_file():
+                overrides["input_file"] = last_input
             elif default_input.is_file():
                 overrides["input_file"] = default_input
+                run_state["last_input"] = str(default_input.resolve())
             else:
                 input_dir = Path("input")
                 if input_dir.is_dir():
-                    xlsx_files = list(input_dir.glob("*.xlsx"))
+                    xlsx_files = sorted(
+                        input_dir.glob("*.xlsx"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
                     if xlsx_files:
                         overrides["input_file"] = xlsx_files[0]
+                        run_state["last_input"] = str(xlsx_files[0].resolve())
 
         if output_choice:
-            overrides["output_dir"] = Path(output_choice)
+            out_path = Path(output_choice)
+            overrides["output_dir"] = out_path
+            run_state["last_output"] = str(out_path.resolve())
+        elif run_state.get("last_output"):
+            overrides["output_dir"] = Path(run_state["last_output"])
+
+        _save_run_state(run_state)
         if args.max_profiles is not None:
             overrides["max_profiles"] = args.max_profiles
         if args.fast:
@@ -197,18 +245,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 print(f"Opening output folder: {abs_output}")
                 if sys.platform == "win32":
+                    opened = False
                     try:
                         import os
 
                         os.startfile(str(abs_output))
+                        opened = True
                     except Exception:
                         pass
-                    try:
-                        import subprocess
+                    if not opened:
+                        try:
+                            import subprocess
 
-                        subprocess.Popen(f'explorer "{abs_output}"', shell=True)
-                    except Exception:
-                        pass
+                            subprocess.Popen(f'explorer "{abs_output}"', shell=True)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 

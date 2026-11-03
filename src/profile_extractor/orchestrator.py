@@ -93,6 +93,13 @@ def run_pipeline(
     num_valid = len(valid_rows)
     stop_triggered = False
     profiles_dir = config.output_dir / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    # Clear stale profile JSONs from prior runs so only current run results exist
+    for stale_json in profiles_dir.glob("*.json"):
+        try:
+            stale_json.unlink()
+        except OSError:
+            pass
 
     try:
         for idx, row in enumerate(valid_rows):

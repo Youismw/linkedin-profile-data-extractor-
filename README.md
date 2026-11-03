@@ -90,32 +90,71 @@ python -m venv .venv
 
 ## Usage
 
-### The Single Command
-Run the tool using the unified `.\run` command:
+### The Two Shorthand Commands
+Two root commands are provided for quick and simple execution:
+- **`.\run`**: Primary command launcher.
+- **`.\extract`**: Identical alias command.
+
+Both work directly from PowerShell or Command Prompt:
 
 ```powershell
-# 1. Default (uses input/profiles.xlsx and saves to the inside 'output' folder)
+# 1. Default Run (uses last-remembered paths or input/profiles.xlsx -> output/)
 .\run
 
-# 2. Specify an input file (output defaults to inside 'output' folder)
+# 2. Or using the alias command
+.\extract
+
+# 3. Specify an input file (remembers path for future runs automatically)
 .\run "C:\path\to\candidates.xlsx"
 
-# 3. Specify an input folder (tool finds the .xlsx inside it automatically)
-.\run "C:\path\to\folder_with_excel"
+# 4. Specify an input folder (automatically picks the most recently modified .xlsx)
+.\run "C:\path\to\folder_with_spreadsheets"
 
-# 4. Specify input AND custom output folder anywhere on the machine
+# 5. Specify input AND custom output folder anywhere on the machine
 .\run "C:\path\to\candidates.xlsx" "D:\MyData\ExtractedProfiles"
+
+# 6. Fast mode for quick testing
+.\run --fast
 ```
 
 > [!TIP]
-> **Output Folder Is Optional**: If you leave the second path empty, the tool automatically puts everything into the local `output` directory and pops it open in Windows File Explorer when finished.
+> **Automatic Path Memory & Stale File Prevention**:
+> - **Path Memory**: Whenever you specify a custom input file or output directory, the tool saves them in a local `.run_state.json` file. Future runs (`.\run` or `.\extract`) automatically remember and reuse your chosen paths without needing to re-type them!
+> - **Clean Output**: Each fresh run automatically clears old `.json` profiles from the output directory before saving, ensuring that stale profiles from earlier runs never linger or pollute your current output.
+> - **Single Window Pop-Up**: When extraction completes, a single Windows File Explorer window pops open directly to the extracted `profiles/` directory.
+
+---
+
+### Unedited Raw Text Dump (`raw_text`)
+Each extracted JSON profile in `output/profiles/<slug>.json` contains both structured parsed fields and a full, unedited, unformatted text dump of the entire profile at the end:
+
+```json
+{
+  "meta": {
+    "source_url": "https://www.linkedin.com/in/rohit-chauhan-464b15262/",
+    "slug": "rohit-chauhan-464b15262",
+    "status": "ok",
+    "missing_fields": ["experience"]
+  },
+  "profile": {
+    "name": "Rohit Chauhan",
+    "headline": "Dr. Akhilesh Das Gupta Institute of Professional Studies",
+    "location": "Delhi, India",
+    "about": "René Descartes famously said...",
+    "education": [...],
+    "skills": [...]
+  },
+  "other_sections": [...],
+  "raw_text": "Rohit Chauhan\nDr. Akhilesh Das Gupta Institute of Professional Studies\nDelhi, India\nAbout\nRené Descartes famously said...\nActivity..."
+}
+```
 
 ---
 
 ### Automatic Session Expiry & Relogin
 You do not need to run a separate login command. 
 
-Whenever you run `.\run`, the tool automatically checks if your LinkedIn session is active:
+Whenever you run `.\run` or `.\extract`, the tool automatically checks if your LinkedIn session is active:
 - **If your session is active**: Extraction starts immediately.
 - **If your session has expired or is missing**: The tool automatically displays:
   ```text

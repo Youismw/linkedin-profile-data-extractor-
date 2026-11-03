@@ -11,6 +11,7 @@ input/
 output/
 .auth/
 logs/
+.run_state.json
 tests/fixtures/private/
 
 # Tool and cache artifacts

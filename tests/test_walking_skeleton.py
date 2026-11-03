@@ -222,3 +222,36 @@ class TestWalkingSkeleton:
         assert ret == 0
         assert (output_dir / "profiles" / "cli-user.json").exists()
         assert (output_dir / "run_summary.json").exists()
+
+    def test_cli_state_persistence_and_stale_cleaning(self, tmp_path: Path, monkeypatch) -> None:
+        """Verify CLI remembers custom paths for subsequent runs and cleans stale files."""
+        # Isolate state file to tmp_path
+        state_file = tmp_path / ".run_state.json"
+        monkeypatch.setattr("profile_extractor.cli.STATE_FILE", state_file)
+
+        input_xlsx = tmp_path / "custom_input.xlsx"
+        output_dir = tmp_path / "custom_output"
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Links"])
+        ws.append(["https://www.linkedin.com/in/persisted-user/"])
+        wb.save(input_xlsx)
+
+        # 1. Run with explicit positional input and output
+        ret1 = main(["run", str(input_xlsx), str(output_dir), "--fake"])
+        assert ret1 == 0
+        assert (output_dir / "profiles" / "persisted-user.json").exists()
+        assert state_file.is_file()
+
+        # Place a stale profile from an old run in output
+        stale_file = output_dir / "profiles" / "stale-old-user.json"
+        stale_file.write_text("{}", encoding="utf-8")
+        assert stale_file.is_file()
+
+        # 2. Run with NO positional input or output arguments (should remember paths and wipe stale)
+        ret2 = main(["run", "--fake"])
+        assert ret2 == 0
+        assert (output_dir / "profiles" / "persisted-user.json").exists()
+        assert not stale_file.exists(), "Stale profile from prior run must be cleaned"
