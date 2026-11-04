@@ -305,3 +305,84 @@ def test_card_composer_falls_back_when_no_profile_cards_were_seen() -> None:
     """Non-SDUI pages retain the final HTML as the safe fallback."""
     fallback_html = "<html><body><main><h1>Legacy profile</h1></main></body></html>"
     assert _compose_captured_profile_html([], fallback_html) == fallback_html
+
+
+def test_card_composer_preserves_final_document_and_adds_missing_virtualized_card() -> None:
+    """Captured cards augment the final page; they must never replace its contents."""
+    fallback_html = (
+        '<html><body><main>'
+        '<section id="top-card">Profile header</section>'
+        '<section id="experience">Visible final-page experience</section>'
+        '</main></body></html>'
+    )
+    captured_about = (
+        '<section id="com.linkedin.sdui.profile.card.About">'
+        '<h2>About</h2><p>About text retained from an earlier scroll snapshot.</p>'
+        '</section>'
+    )
+
+    composed = _compose_captured_profile_html([captured_about], fallback_html)
+    soup = BeautifulSoup(composed, "lxml")
+
+    assert soup.select_one("#top-card").get_text(" ", strip=True) == "Profile header"
+    assert soup.select_one("#experience").get_text(" ", strip=True) == (
+        "Visible final-page experience"
+    )
+    assert "About text retained from an earlier scroll snapshot." in soup.get_text(" ", strip=True)
+    assert len(soup.select('[id="com.linkedin.sdui.profile.card.About"]')) == 1
+
+
+def test_card_composer_replaces_existing_card_only_with_richer_snapshot() -> None:
+    """A richer earlier snapshot may expand a truncated card without losing siblings."""
+    fallback_html = (
+        '<html><body><main>'
+        '<section id="about-card"><h2>About</h2><p>Short excerpt</p></section>'
+        '<section id="other-card">Keep this unrelated section</section>'
+        '</main></body></html>'
+    )
+    richer_about = (
+        '<section id="about-card"><h2>About</h2>'
+        '<p>Short excerpt plus the complete text retained from the expanded card.</p>'
+        '</section>'
+    )
+
+    composed = _compose_captured_profile_html([richer_about], fallback_html)
+    soup = BeautifulSoup(composed, "lxml")
+
+    assert soup.select_one("#about-card").get_text(" ", strip=True).endswith(
+        "Short excerpt plus the complete text retained from the expanded card."
+    )
+    assert soup.select_one("#other-card").get_text(" ", strip=True) == (
+        "Keep this unrelated section"
+    )
+    assert len(soup.select('[id="about-card"]')) == 1
+
+
+def test_virtualized_about_card_is_merged_without_dropping_final_page_sections() -> None:
+    """A card missing from final DOM is restored while all remaining page data survives."""
+    html_path = LIVE_FIXTURES_DIR / "vishal-soam-5ba768168.html"
+    original_html = html_path.read_text(encoding="utf-8")
+    soup = BeautifulSoup(original_html, "lxml")
+    about_card = soup.select_one('[id$="About"]')
+    assert about_card is not None
+    captured_about = str(about_card)
+    about_card.decompose()  # Simulate LinkedIn virtualizing the card after scrolling.
+
+    final_html_without_about = str(soup)
+    merged_html = _compose_captured_profile_html(
+        [captured_about], final_html_without_about
+    )
+    doc = parse_profile(
+        source_url="https://www.linkedin.com/in/vishal-soam-5ba768168/",
+        slug="vishal-soam-5ba768168",
+        html=merged_html,
+        status=Status.OK,
+        important_fields=DEFAULT_IMPORTANT_FIELDS,
+    )
+
+    assert doc.profile.about is not None
+    assert doc.profile.about.startswith("Full Stack Engineer (MERN)")
+    assert doc.profile.name == "Vishal Soam"
+    assert doc.profile.experience
+    assert "Featured" in [section.heading for section in doc.other_sections]
+    assert "My Resume" in (doc.raw_text or "")

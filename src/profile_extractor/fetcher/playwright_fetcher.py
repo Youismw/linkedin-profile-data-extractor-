@@ -15,6 +15,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 from playwright.sync_api import (
     Browser,
     BrowserContext,
@@ -85,11 +87,13 @@ _GET_CAPTURED_PROFILE_CARDS_JS = r"""() => {
 
 
 def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
-    """Build one parseable document from profile cards retained during scrolling.
+    """Preserve the final page and merge in cards lost to LinkedIn virtualization.
 
-    LinkedIn can replace or virtualize cards as the viewport moves. The fetcher
-    therefore retains each SDUI profile card when encountered and composes the
-    richest captured version of each card into a single main landmark.
+    The final DOM can contain useful content that is not covered by the known
+    profile-card ID prefixes (including unclassified sections and raw text).
+    Never replace that document with a whitelist of captured cards. Instead,
+    retain it as the source of truth, add captured cards whose IDs are absent,
+    and replace an existing card only when the captured snapshot has more text.
     """
     if not isinstance(cards, list):
         return fallback_html
@@ -98,12 +102,45 @@ def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
     if not valid_cards:
         return fallback_html
 
-    return (
-        '<!doctype html><html><head><title>LinkedIn Profile Capture</title></head>'
-        '<body><main id="workspace">'
-        + "\n".join(valid_cards)
-        + "</main></body></html>"
-    )
+    try:
+        soup = BeautifulSoup(fallback_html, "lxml")
+        main = soup.find("main")
+        if main is None:
+            container = soup.body if soup.body is not None else soup
+            main = soup.new_tag("main", id="workspace")
+            container.append(main)
+
+        changed = False
+        for markup in valid_cards:
+            fragment = BeautifulSoup(markup, "lxml")
+            captured = fragment.find(id=True)
+            if captured is None:
+                continue
+
+            card_id = captured.get("id")
+            if not isinstance(card_id, str) or not card_id:
+                continue
+
+            existing = soup.find(id=card_id)
+            if existing is None:
+                main.append(captured)
+                changed = True
+                continue
+
+            # Use text length as a conservative richness check. Equal/shorter
+            # snapshots never replace content from the final DOM.
+            captured_text = captured.get_text(" ", strip=True)
+            existing_text = existing.get_text(" ", strip=True)
+            if len(captured_text) > len(existing_text):
+                existing.replace_with(captured)
+                changed = True
+
+        # Returning the original bytes when no merge was needed avoids needless
+        # serialization differences and preserves the exact final-page capture.
+        return str(soup) if changed else fallback_html
+    except Exception:
+        # A malformed fragment must not make the primary page capture unusable.
+        return fallback_html
 
 
 class PlaywrightFetcher:
