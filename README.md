@@ -431,5 +431,9 @@ and limits.
 ## Roadmap & Planned Features
 
 ### Basic GUI Assistant
-A lightweight, very basic graphical user interface (GUI) is planned to make configuring terminal flags (options / "flares" such as `--scrollsteps`, `--disextra`, `--fast`, `--visible`) effortless, and to let users select input spreadsheets and output directories using intuitive mouse or keyboard file pickers. While terminal execution remains the primary engine for automation and headless pipelines, this GUI helper is intended for convenience (though it is not a current development focus).
+A lightweight, very basic graphical user interface (GUI) is planned to make configuring terminal flags (options / "flares" such as `--scrollsteps`, `--steptime`, `--disextra`, `--fast`, `--visible`) effortless, and to let users select input spreadsheets and output directories using intuitive mouse or keyboard file pickers.
+
+To make the interface clear and self-explanatory:
+* **Inline Button Explanations**: Each button, toggle, and setting in the GUI will feature a small explanation bit directly below it, clarifying exactly what the flare does, its runtime vs. data-completeness trade-offs (such as scroll steps and step delay speed impact), and when to use it.
+* **Development Status**: While terminal execution remains the primary engine for automation, batch runs, and headless pipelines, this GUI helper is planned for convenience (though it is not a current development focus).
 
