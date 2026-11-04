@@ -40,34 +40,50 @@ _CAPTURE_PROFILE_CARDS_JS = r"""() => {
 
     const stateKey = '__profileExtractorCapturedCardsV1';
     const state = window[stateKey] || (window[stateKey] = {order: [], cards: {}});
-    const cards = root.querySelectorAll(
+    const isSkillsDetails = /\/details\/skills\/?$/.test(window.location.pathname);
+    const profileCardSelectors =
         '[id^="com.linkedin.sdui.profile.card."], ' +
         '[id^="profileCardsAboveActivity"], ' +
-        '[id^="profileCardsBelowActivity"]'
-    );
+        '[id^="profileCardsBelowActivity"]';
+    // Skills detail pages can virtualize entity cards as the list scrolls. Capture
+    // those cards too, but only on /details/skills/ to avoid broad DOM snapshots
+    // or changing capture behaviour on ordinary profile pages.
+    const selectors = isSkillsDetails
+        ? profileCardSelectors + ', div[componentkey*="entity-collection-item"]'
+        : profileCardSelectors;
+    const cards = root.querySelectorAll(selectors);
 
     for (const card of cards) {
         const id = card.getAttribute('id');
-        if (!id) continue;
+        const componentKey = card.getAttribute('componentkey');
+        const isSkillEntityItem = isSkillsDetails
+            && componentKey
+            && componentKey.includes('entity-collection-item');
+        const key = isSkillEntityItem
+            ? `componentkey:${componentKey}`
+            : (id ? `id:${id}` : '');
+        if (!key) continue;
 
         // The older LinkedIn layout uses profileCardsAbove/BelowActivity wrappers.
         // Skip a wrapper when its child SDUI cards are captured individually; keep
         // it when it is the only container for a section such as Interests.
-        const isLegacyGroup = id.startsWith('profileCardsAboveActivity')
-            || id.startsWith('profileCardsBelowActivity');
+        const isLegacyGroup = typeof id === 'string' && (
+            id.startsWith('profileCardsAboveActivity')
+            || id.startsWith('profileCardsBelowActivity')
+        );
         if (isLegacyGroup && card.querySelector(
             '[id^="com.linkedin.sdui.profile.card."]'
         )) continue;
         const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
         if (!text) continue;
 
-        const previous = state.cards[id];
-        if (!previous) state.order.push(id);
+        const previous = state.cards[key];
+        if (!previous) state.order.push(key);
         // Avoid serializing unchanged cards on every scroll step. Keep the richest
         // version seen, including same-length text changes after hydration.
         if (!previous || text !== previous.text) {
             if (!previous || text.length >= previous.textLength) {
-                state.cards[id] = {html: card.outerHTML, text, textLength: text.length};
+                state.cards[key] = {html: card.outerHTML, text, textLength: text.length};
             }
         }
     }
@@ -91,9 +107,10 @@ def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
 
     The final DOM can contain useful content that is not covered by the known
     profile-card ID prefixes (including unclassified sections and raw text).
+    On skills detail pages it can also merge captured entity-collection items.
     Never replace that document with a whitelist of captured cards. Instead,
-    retain it as the source of truth, add captured cards whose IDs are absent,
-    and replace an existing card only when the captured snapshot has more text.
+    retain it as the source of truth, add missing captured nodes in snapshot order,
+    and replace an existing node only when the captured snapshot has more text.
     """
     if not isinstance(cards, list):
         return fallback_html
@@ -111,19 +128,47 @@ def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
             container.append(main)
 
         changed = False
-        for markup in valid_cards:
+        for card_index, markup in enumerate(valid_cards):
             fragment = BeautifulSoup(markup, "lxml")
-            captured = fragment.find(id=True)
+            fragment_body = fragment.body
+            captured = (
+                fragment_body.find(True, recursive=False)
+                if fragment_body is not None
+                else fragment.find(True)
+            )
             if captured is None:
                 continue
 
             card_id = captured.get("id")
-            if not isinstance(card_id, str) or not card_id:
+            component_key = captured.get("componentkey")
+            if isinstance(component_key, str) and component_key:
+                existing = soup.find(attrs={"componentkey": component_key})
+                # Keep detail-page entity items inside LazyColumn so the existing
+                # skills parser discovers them through its normal selection path.
+                destination = soup.select_one('[data-component-type="LazyColumn"]') or main
+            elif isinstance(card_id, str) and card_id:
+                existing = soup.find(id=card_id)
+                destination = main
+            else:
                 continue
 
-            existing = soup.find(id=card_id)
             if existing is None:
-                main.append(captured)
+                inserted = False
+                if isinstance(component_key, str) and component_key:
+                    # Retain the original detail-list order when an earlier card
+                    # was virtualized away but a later card remains in the final DOM.
+                    for later_markup in valid_cards[card_index + 1 :]:
+                        later_fragment = BeautifulSoup(later_markup, "lxml")
+                        later_node = later_fragment.find(attrs={"componentkey": True})
+                        later_key = later_node.get("componentkey") if later_node else None
+                        if isinstance(later_key, str) and later_key:
+                            later_existing = soup.find(attrs={"componentkey": later_key})
+                            if later_existing is not None:
+                                later_existing.insert_before(captured)
+                                inserted = True
+                                break
+                if not inserted:
+                    destination.append(captured)
                 changed = True
                 continue
 

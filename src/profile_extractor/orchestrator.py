@@ -22,6 +22,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -29,6 +30,7 @@ from profile_extractor.config import ExtractorConfig
 from profile_extractor.fetcher import Fetcher
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import (
+    OtherSection,
     Reason,
     RunSummary,
     Status,
@@ -67,6 +69,360 @@ def _count_field_richness(items: Any) -> int:
             score += len(dump)
     return score
 
+
+
+
+def _merge_skill_items(current: Any, detailed: Any) -> list[str]:
+    """Merge main-profile and deep-page skills without discarding either source.
+
+    The profile page and /details/skills/ page can expose different subsets while
+    LinkedIn is still hydrating or virtualizing its list. Keep every existing
+    profile-page skill in its original order, then append unseen detail-page
+    skills. Comparison is case-insensitive, but the first-seen spelling wins.
+    """
+    merged = [item for item in current if isinstance(item, str)] if isinstance(
+        current, (list, tuple)
+    ) else []
+    seen = {" ".join(item.split()).casefold() for item in merged if item.strip()}
+
+    if isinstance(detailed, (list, tuple)):
+        for item in detailed:
+            if not isinstance(item, str):
+                continue
+            clean = " ".join(item.split())
+            if not clean:
+                continue
+            key = clean.casefold()
+            if key not in seen:
+                merged.append(clean)
+                seen.add(key)
+    return merged
+
+
+
+# The supplemental pass is intentionally bounded. The original six-page path
+# remains unchanged; this cap only applies to previously-unhandled same-profile
+# section links discovered after that pass.
+MAX_SUPPLEMENTAL_DETAIL_PAGES = 12
+_DETAIL_ROUTE_SEGMENT_RE = re.compile(r"^[a-z0-9_-]{1,80}$", re.IGNORECASE)
+
+
+def _normalised_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _discover_profile_detail_pages(
+    html: str,
+    profile_url: str,
+    slug: str,
+    max_pages: int = MAX_SUPPLEMENTAL_DETAIL_PAGES,
+) -> list[tuple[str, str]]:
+    """Discover bounded, same-profile LinkedIn detail/activity routes only.
+
+    This deliberately does not crawl links found on discovered pages. It only
+    considers direct links from the initial profile HTML, and only accepts the
+    exact current profile's /details/<section>/ or /recent-activity/{all,comments}/
+    routes. Query strings and fragments are removed for URL deduplication.
+    """
+    if not html or max_pages <= 0:
+        return []
+    try:
+        source = urlsplit(profile_url)
+        source_host = (source.hostname or "").lower().removeprefix("www.")
+        if source_host != "linkedin.com":
+            return []
+        soup = BeautifulSoup(html, "lxml")
+        root = soup.find("main") or soup
+    except (TypeError, ValueError):
+        return []
+
+    canonical_slug = quote(unquote(slug), safe="-._")
+    results: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for anchor in root.find_all("a", href=True):
+        href = str(anchor.get("href") or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        try:
+            joined = urljoin(profile_url, href)
+            parts = urlsplit(joined)
+            host = (parts.hostname or "").lower().removeprefix("www.")
+            if parts.scheme.lower() not in {"http", "https"} or host != "linkedin.com":
+                continue
+            if parts.username or parts.password or parts.port not in (None, 80, 443):
+                continue
+            segments = [unquote(segment) for segment in parts.path.split("/") if segment]
+        except (TypeError, ValueError):
+            continue
+
+        section: str | None = None
+        canonical_path: str | None = None
+        if (
+            len(segments) == 4
+            and segments[0].casefold() == "in"
+            and segments[1].casefold() == unquote(slug).casefold()
+            and segments[2].casefold() == "details"
+            and _DETAIL_ROUTE_SEGMENT_RE.fullmatch(segments[3])
+        ):
+            section = segments[3].casefold()
+            canonical_path = f"/in/{canonical_slug}/details/{quote(section, safe='-_')}/"
+        elif (
+            len(segments) in {3, 4}
+            and segments[0].casefold() == "in"
+            and segments[1].casefold() == unquote(slug).casefold()
+            and segments[2].casefold() == "recent-activity"
+            and (len(segments) == 3 or segments[3].casefold() in {"all", "comments"})
+        ):
+            section = "recent-activity"
+            suffix = f"{segments[3].casefold()}/" if len(segments) == 4 else ""
+            canonical_path = f"/in/{canonical_slug}/recent-activity/{suffix}"
+
+        if not section or not canonical_path:
+            continue
+        # Keep query parameters that can select meaningful LinkedIn content
+        # (e.g. initialTabId, vieweeProfileId), but drop known tracking noise.
+        meaningful_query = [
+            (key, value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if not key.casefold().startswith("utm_")
+            and key.casefold() not in {"trk", "lipi", "licu", "original_referer"}
+        ]
+        query = urlencode(sorted(meaningful_query))
+        canonical_url = f"https://www.linkedin.com{canonical_path}"
+        if query:
+            canonical_url = f"{canonical_url}?{query}"
+        if canonical_url in seen_urls:
+            continue
+        seen_urls.add(canonical_url)
+        results.append((section, canonical_url))
+        if len(results) >= max_pages:
+            break
+
+    return results
+
+
+def _extract_supplemental_page_text(html: str, section: str) -> tuple[str, str]:
+    """Extract visible main text and a useful heading from a detail page."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all(["script", "style", "noscript", "svg", "template"]):
+        tag.decompose()
+    for tag in soup.select("nav, footer, aside, [role='dialog'], .artdeco-modal"):
+        tag.decompose()
+    main = soup.find("main") or soup.body or soup
+
+    expected = "activity" if section == "recent-activity" else section.replace("-", " ").replace("_", " ")
+    heading = ""
+    candidates = [
+        " ".join(tag.get_text(" ", strip=True).split())
+        for tag in main.find_all(["h1", "h2", "h3"])
+    ]
+    for candidate in candidates:
+        if candidate and _normalised_text(candidate) == expected:
+            heading = candidate
+            break
+    if not heading:
+        for tag in main.find_all(["h2", "h3"]):
+            candidate = " ".join(tag.get_text(" ", strip=True).split())
+            if candidate:
+                heading = candidate
+                break
+    if not heading:
+        for candidate in candidates:
+            if candidate:
+                heading = candidate
+                break
+    if not heading:
+        heading = "Activity" if section == "recent-activity" else " ".join(
+            part.capitalize() for part in section.replace("_", "-").split("-")
+        )
+
+    text = main.get_text(separator="\n", strip=True)
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if _normalised_text(line) == _normalised_text(heading):
+            del lines[index]
+            break
+    return "\n".join(lines).strip(), heading
+
+
+def _unique_lines(existing: str, incoming: str) -> str:
+    """Append only genuinely new normalized lines, retaining original wording."""
+    old = existing or ""
+    seen = {_normalised_text(line) for line in old.splitlines() if _normalised_text(line)}
+    additions: list[str] = []
+    for line in (incoming or "").splitlines():
+        key = _normalised_text(line)
+        if key and key not in seen:
+            additions.append(line)
+            seen.add(key)
+    if not additions:
+        return old
+    return f"{old.rstrip()}\n{chr(10).join(additions)}".strip()
+
+
+def _append_supplemental_raw(
+    raw_text: str | None, heading: str, url: str, text: str
+) -> str:
+    """Add one detail-page text dump, deduplicated by canonical URL and lines."""
+    current = raw_text or ""
+    marker = f"--- Supplemental subpage: {heading} | {url} ---"
+    if marker in current:
+        return current
+    # Recompute only lines not already present in the existing raw dump.
+    old_keys = {_normalised_text(line) for line in current.splitlines() if _normalised_text(line)}
+    additions: list[str] = []
+    for line in (text or "").splitlines():
+        key = _normalised_text(line)
+        if key and key not in old_keys:
+            additions.append(line)
+            old_keys.add(key)
+    payload = "\n".join(additions)
+    return f"{current.rstrip()}\n\n{marker}\n{payload}".strip()
+
+
+def _record_matches(section: str, left: Any, right: Any) -> bool:
+    """Conservatively identify duplicate structured records across two sources."""
+    if isinstance(left, str) or isinstance(right, str):
+        return _normalised_text(left) == _normalised_text(right)
+    if not hasattr(left, "model_dump") or not hasattr(right, "model_dump"):
+        return _normalised_text(left) == _normalised_text(right)
+
+    a = left.model_dump(exclude_none=True)
+    b = right.model_dump(exclude_none=True)
+
+    def value(source: dict[str, Any], field: str) -> str:
+        return _normalised_text(source.get(field))
+
+    def compatible(field: str) -> bool:
+        av, bv = value(a, field), value(b, field)
+        return not (av and bv and av != bv)
+
+    if section == "experience":
+        return (
+            bool(value(a, "title"))
+            and value(a, "title") == value(b, "title")
+            and compatible("company")
+            and compatible("dates")
+            and bool(
+                (value(a, "company") and value(b, "company"))
+                or (value(a, "dates") and value(b, "dates"))
+            )
+        )
+    if section == "education":
+        return (
+            bool(value(a, "school"))
+            and value(a, "school") == value(b, "school")
+            and compatible("degree")
+            and compatible("dates")
+            and bool(
+                (value(a, "degree") and value(b, "degree"))
+                or (value(a, "dates") and value(b, "dates"))
+            )
+        )
+    if section == "certifications":
+        left_id, right_id = value(a, "credential_id"), value(b, "credential_id")
+        if left_id and right_id:
+            return left_id == right_id
+        return (
+            bool(value(a, "name"))
+            and value(a, "name") == value(b, "name")
+            and compatible("issuer")
+        )
+    if section == "projects":
+        left_url, right_url = value(a, "url"), value(b, "url")
+        if left_url and right_url:
+            return left_url == right_url
+        return (
+            bool(value(a, "title"))
+            and value(a, "title") == value(b, "title")
+            and compatible("dates")
+        )
+    if section == "languages":
+        return bool(value(a, "name")) and value(a, "name") == value(b, "name")
+    return bool(value(a, "raw")) and value(a, "raw") == value(b, "raw")
+
+
+def _merge_matching_record(existing: Any, incoming: Any) -> None:
+    """Fill empty fields on a match; never replace populated scalar content."""
+    if not hasattr(existing, "model_dump") or not hasattr(incoming, "model_dump"):
+        return
+    for field, value in incoming.model_dump(exclude_none=True).items():
+        current = getattr(existing, field, None)
+        if value is None or value == "" or value == []:
+            continue
+        if current is None or current == "" or current == []:
+            setattr(existing, field, value)
+        elif isinstance(current, list) and isinstance(value, list):
+            existing_keys = {_normalised_text(item) for item in current}
+            current.extend(
+                item for item in value if _normalised_text(item) and _normalised_text(item) not in existing_keys
+            )
+        elif field == "raw" and isinstance(current, str) and isinstance(value, str):
+            setattr(existing, field, _unique_lines(current, value))
+
+
+def _merge_collection_additively(section: str, current: Any, additions: Any) -> list[Any]:
+    """Union structured records while preserving current order and values."""
+    merged = [
+        item.model_copy(deep=True) if hasattr(item, "model_copy") else item
+        for item in (current or [])
+    ]
+    for candidate in additions or []:
+        match = next((item for item in merged if _record_matches(section, item, candidate)), None)
+        if match is None:
+            merged.append(
+                candidate.model_copy(deep=True)
+                if hasattr(candidate, "model_copy")
+                else candidate
+            )
+        else:
+            _merge_matching_record(match, candidate)
+    return merged
+
+
+def _restore_profile_snapshot_additively(profile: Any, baseline: Any) -> None:
+    """Restore any original profile-page records removed by legacy deep replacement."""
+    for field in (
+        "experience", "education", "skills", "certifications", "projects", "languages"
+    ):
+        current = getattr(profile, field, None)
+        original = getattr(baseline, field, None)
+        if current is not None or original is not None:
+            if field == "skills":
+                setattr(profile, field, _merge_skill_items(current, original))
+            else:
+                setattr(profile, field, _merge_collection_additively(field, current, original))
+    for field in ("name", "headline", "location", "about"):
+        if not getattr(profile, field, None) and getattr(baseline, field, None):
+            setattr(profile, field, getattr(baseline, field))
+
+
+def _append_other_section_additively(
+    sections: list[OtherSection], heading: str, text: str
+) -> None:
+    """Append a new section or add only unseen lines to an existing one."""
+    clean_heading = " ".join((heading or "").split()).strip() or "Additional Information"
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return
+    for existing in sections:
+        if _normalised_text(existing.heading) == _normalised_text(clean_heading):
+            existing.text = _unique_lines(existing.text, clean_text)
+            return
+    sections.append(OtherSection(heading=clean_heading, text=clean_text))
+
+
+def _recalculate_missing_fields(doc: Any, important_fields: list[str]) -> None:
+    profile_data = doc.profile.model_dump(exclude_none=True)
+    missing: list[str] = []
+    for field in important_fields:
+        value = profile_data.get(field)
+        if value is None or (isinstance(value, list) and not value):
+            missing.append(field)
+        elif isinstance(value, str) and _is_placeholder_value(value):
+            missing.append(field)
+    doc.meta.missing_fields = missing
 
 def run_pipeline(
     config: ExtractorConfig,
@@ -217,12 +573,16 @@ def run_pipeline(
                         status=Status.OK,
                         important_fields=config.important_fields,
                     )
+                    # Preserve the first-pass output as immutable input to a later
+                    # additive reconciliation. The legacy path below is retained.
+                    baseline_profile = doc.profile.model_copy(deep=True)
 
                     # Deep crawling of sub-pages (Show all skills, education, experience).
                     # Every sub-page fetch goes through the same block policy as the main
                     # profile fetch and is paced with the same polite delay.
                     if getattr(config, "deep_details", True) and fetch_res.html:
                         main_html = fetch_res.html
+                        legacy_attempted_sections: set[str] = set()
                         detail_specs = [
                             (
                                 "skills",
@@ -276,6 +636,7 @@ def run_pipeline(
                                 break
                             if not any(re.search(pat, main_html, re.I) for pat in patterns):
                                 continue
+                            legacy_attempted_sections.add(section)
                             detail_url = f"https://www.linkedin.com/in/{slug}/details/{section}/"
                             sleep_fn(
                                 random.uniform(config.delay_seconds_min, config.delay_seconds_max)
@@ -348,29 +709,181 @@ def run_pipeline(
                                 isinstance(deep_items, (list, tuple))
                                 and len(deep_items) > 0
                             ):
-                                deep_score = _count_field_richness(deep_items)
-                                current_score = _count_field_richness(current_items)
-                                if len(deep_items) >= current_count or deep_score >= current_score:
-                                    logger.info(
-                                        "Row %d: unrolled %d total %s (was %d, score %d vs %d)",
+                                if section == "skills":
+                                    # Skills are scalar labels, not rich records. Merge
+                                    # both sources instead of replacing the profile-page
+                                    # subset with a potentially incomplete details page.
+                                    merged_skills = _merge_skill_items(current_items, deep_items)
+                                    if len(merged_skills) > current_count:
+                                        logger.info(
+                                            "Row %d: merged %d skills (was %d; added %d from details page)",
+                                            row.row_number,
+                                            len(merged_skills),
+                                            current_count,
+                                            len(merged_skills) - current_count,
+                                        )
+                                        doc.profile.skills = merged_skills
+                                else:
+                                    deep_score = _count_field_richness(deep_items)
+                                    current_score = _count_field_richness(current_items)
+                                    if (
+                                        len(deep_items) >= current_count
+                                        or deep_score >= current_score
+                                    ):
+                                        logger.info(
+                                            "Row %d: unrolled %d total %s (was %d, score %d vs %d)",
+                                            row.row_number,
+                                            len(deep_items),
+                                            section,
+                                            current_count,
+                                            deep_score,
+                                            current_score,
+                                        )
+                                        setattr(doc.profile, section, deep_items)
+                        # ------------------------------------------------------------------
+                        # Additive recovery pass. The original profile parse and the
+                        # existing six known deep-page fetches have already run. This pass
+                        # only discovers additional same-profile detail/activity routes,
+                        # preserves unknown pages in raw_text + other_sections, and unions
+                        # new structured records. It never recursively follows subpage links.
+                        # ------------------------------------------------------------------
+                        _restore_profile_snapshot_additively(doc.profile, baseline_profile)
+
+                        if not stop_triggered:
+                            parser_by_section = {
+                                "skills": ("skills", parse_skills_details),
+                                "education": ("education", parse_education_details),
+                                "experience": ("experience", parse_experience_details),
+                                "certifications": ("certifications", parse_certifications_details),
+                                "licenses": ("certifications", parse_certifications_details),
+                                "licenses-and-certifications": (
+                                    "certifications", parse_certifications_details
+                                ),
+                                "projects": ("projects", parse_projects_details),
+                                "languages": ("languages", parse_languages_details),
+                            }
+                            legacy_aliases = {
+                                "licenses": "certifications",
+                                "licenses-and-certifications": "certifications",
+                            }
+                            legacy_attempted_normalized = {
+                                legacy_aliases.get(item, item)
+                                for item in legacy_attempted_sections
+                            }
+                            discovered_pages = _discover_profile_detail_pages(main_html, url, slug)
+                            profile_text, _ = _extract_supplemental_page_text(main_html, "profile")
+                            profile_text_norm = _normalised_text(profile_text)
+                            supplemental_attempts = 0
+
+                            for section, detail_url in discovered_pages:
+                                target_field = legacy_aliases.get(section, section)
+                                if target_field in legacy_attempted_normalized:
+                                    continue
+                                if supplemental_attempts >= MAX_SUPPLEMENTAL_DETAIL_PAGES:
+                                    logger.warning(
+                                        "Row %d: supplemental detail-page limit (%d) reached",
                                         row.row_number,
-                                        len(deep_items),
-                                        section,
-                                        current_count,
-                                        deep_score,
-                                        current_score,
+                                        MAX_SUPPLEMENTAL_DETAIL_PAGES,
                                     )
-                                    setattr(doc.profile, section, deep_items)
-                        # Recalculate missing fields after unrolling details
-                        missing_fields = []
-                        profile_data = doc.profile.model_dump(exclude_none=True)
-                        for field in config.important_fields:
-                            val = profile_data.get(field)
-                            if val is None or (isinstance(val, list) and len(val) == 0):
-                                missing_fields.append(field)
-                            elif isinstance(val, str) and _is_placeholder_value(val):
-                                missing_fields.append(field)
-                        doc.meta.missing_fields = missing_fields
+                                    break
+
+                                supplemental_attempts += 1
+                                sleep_fn(
+                                    random.uniform(
+                                        config.delay_seconds_min,
+                                        config.delay_seconds_max,
+                                    )
+                                )
+                                logger.info(
+                                    "Row %d: additive discovery fetching '%s'...",
+                                    row.row_number,
+                                    section,
+                                )
+                                try:
+                                    supplemental_res = fetcher.fetch(detail_url)
+                                except KeyboardInterrupt:
+                                    raise
+                                except Exception as supplemental_error:
+                                    logger.warning(
+                                        "Row %d: supplemental page '%s' failed: %s",
+                                        row.row_number,
+                                        section,
+                                        supplemental_error,
+                                    )
+                                    continue
+
+                                if supplemental_res.status != Status.OK:
+                                    logger.warning(
+                                        "Row %d: supplemental page '%s' unreachable (%s)",
+                                        row.row_number,
+                                        section,
+                                        supplemental_res.reason.value
+                                        if supplemental_res.reason else "unknown",
+                                    )
+                                    if (
+                                        config.stop_on_block
+                                        and supplemental_res.reason == Reason.BLOCKED
+                                    ):
+                                        logger.warning(
+                                            "Row %d: block detected on supplemental page '%s'; halting run",
+                                            row.row_number,
+                                            section,
+                                        )
+                                        stop_triggered = True
+                                        break
+                                    continue
+                                if not supplemental_res.html:
+                                    continue
+
+                                page_text, page_heading = _extract_supplemental_page_text(
+                                    supplemental_res.html, section
+                                )
+                                if not page_text:
+                                    continue
+                                page_norm = _normalised_text(page_text)
+                                # Fake fetchers, redirects, and stale LinkedIn links can
+                                # return the original profile page. Do not misclassify it
+                                # as a new section or append the whole profile a second time.
+                                if page_norm and profile_text_norm and (
+                                    page_norm == profile_text_norm
+                                    or page_norm in profile_text_norm
+                                ):
+                                    continue
+
+                                heading = page_heading or (
+                                    "Activity" if section == "recent-activity"
+                                    else " ".join(
+                                        part.capitalize()
+                                        for part in section.replace("_", "-").split("-")
+                                    )
+                                )
+                                doc.raw_text = _append_supplemental_raw(
+                                    doc.raw_text, heading, detail_url, page_text
+                                )
+
+                                if section == "about":
+                                    if not doc.profile.about:
+                                        doc.profile.about = page_text
+                                    continue
+
+                                parser_spec = parser_by_section.get(section)
+                                if parser_spec is not None:
+                                    field_name, parser_fn = parser_spec
+                                    supplemental_items = parser_fn(supplemental_res.html)
+                                    if supplemental_items:
+                                        current_items = getattr(doc.profile, field_name, None)
+                                        merged_items = _merge_collection_additively(
+                                            field_name, current_items, supplemental_items
+                                        )
+                                        setattr(doc.profile, field_name, merged_items)
+                                    continue
+
+                                # No dedicated parser? Preserve the page under Others.
+                                _append_other_section_additively(
+                                    doc.other_sections, heading, page_text
+                                )
+
+                        _recalculate_missing_fields(doc, config.important_fields)
 
                     write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
 

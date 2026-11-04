@@ -22,7 +22,11 @@ from profile_extractor.models import (
     ExperienceItem,
     Status,
 )
-from profile_extractor.orchestrator import _count_field_richness, run_pipeline
+from profile_extractor.orchestrator import (
+    _count_field_richness,
+    _merge_skill_items,
+    run_pipeline,
+)
 from profile_extractor.parser import (
     _extract_section_heading,
     _get_container_entity_items,
@@ -442,3 +446,24 @@ class TestDetailCrawlerQualityReconciliation:
         assert "--- Subpage: skills ---" in data["raw_text"]
         assert "Kubernetes" in data["raw_text"]
         assert data["profile"]["skills"] == ["Python", "Kubernetes"]
+
+
+class TestSkillMergeSafety:
+    """Deep skill results must supplement, never replace, main-page skills."""
+
+    def test_merge_preserves_both_sources_and_original_order(self) -> None:
+        current = ["Python", "React", "C++"]
+        detailed = ["react", "Go", "FastAPI", "PYTHON"]
+
+        assert _merge_skill_items(current, detailed) == [
+            "Python", "React", "C++", "Go", "FastAPI"
+        ]
+
+    def test_incomplete_details_page_cannot_remove_profile_page_skills(self) -> None:
+        current = ["Python", "Rust", "TypeScript"]
+        detailed = ["Python"]
+
+        assert _merge_skill_items(current, detailed) == current
+
+    def test_empty_profile_skills_uses_detail_page(self) -> None:
+        assert _merge_skill_items(None, ["Python", "Go"]) == ["Python", "Go"]

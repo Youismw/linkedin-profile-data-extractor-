@@ -386,3 +386,48 @@ def test_virtualized_about_card_is_merged_without_dropping_final_page_sections()
     assert doc.profile.experience
     assert "Featured" in [section.heading for section in doc.other_sections]
     assert "My Resume" in (doc.raw_text or "")
+
+
+def test_activity_sections_use_top_level_posts_without_nested_player_menu_noise() -> None:
+    """Activity keeps post content while excluding nested video-player menu entries."""
+    cases = {
+        "harsh-shukla-921566154.html": "Yangshun Tay",
+        "rohit-chauhan-464b15262.html": "Kutuka",
+        "sundarpichai.html": "Blue marble below",
+    }
+    for filename, expected_content in cases.items():
+        html_path = LIVE_FIXTURES_DIR / filename
+        doc = parse_profile(
+            source_url="https://www.linkedin.com/in/fixture/",
+            slug=html_path.stem,
+            html=html_path.read_text(encoding="utf-8"),
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+        activity = [
+            section for section in doc.other_sections
+            if section.heading.strip().casefold() == "activity"
+        ]
+        assert len(activity) == 1
+        text = activity[0].text
+        assert expected_content.casefold() in text.casefold()
+        assert "subtitles settings dialog" not in text.casefold()
+        assert "chapters" not in text.casefold()
+
+
+def test_virtualized_skill_entity_cards_are_restored_in_original_order() -> None:
+    """Captured skill cards absent from the final DOM are merged into LazyColumn."""
+    final_html = """
+    <html><body><main>
+      <div data-component-type="LazyColumn">
+        <div componentkey="entity-collection-item-2"><span>React</span></div>
+      </div>
+    </main></body></html>
+    """
+    captured_cards = [
+        '<div componentkey="entity-collection-item-1"><span>Python</span></div>',
+        '<div componentkey="entity-collection-item-2"><span>React</span></div>',
+    ]
+
+    merged_html = _compose_captured_profile_html(captured_cards, final_html)
+    assert parse_skills_details(merged_html) == ["Python", "React"]

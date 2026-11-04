@@ -390,12 +390,28 @@ page HTML.
 
 This change preserves the existing parser's structured-field, `other_sections`,
 and `raw_text` behaviour; it does not force every visible LinkedIn card into a
-named field.
-Unclassified sections remain available through `other_sections` and the raw text
-dump. An additional narrow cleanup prevents LinkedIn's “helped me get this job”
-UI badge from being treated as a work-experience description.
+named field. Unclassified sections remain available through `other_sections` and
+the raw text dump. An additional narrow cleanup prevents LinkedIn's “helped me get
+this job” UI badge from being treated as a work-experience description.
 
-Offline verification: **98 passed, 1 skipped**. The skipped test needs an
-authenticated Playwright browser session. The recording-derived issue has not been
-retested against a live authenticated LinkedIn session in this environment. See
-[`RECORDING_REVIEW.md`](RECORDING_REVIEW.md) for observed mismatches and limits.
+### Additive same-profile detail discovery
+
+After the original profile parse and the existing six known detail-page fetches,
+the orchestrator performs a bounded supplemental pass over direct links found on
+the original profile page. It accepts only same-profile LinkedIn `/details/<section>/`
+routes and `/recent-activity/{all,comments}/` routes. It does not recursively crawl
+links found on detail pages, and it caps supplemental requests at 12 per profile.
+
+Already-attempted legacy detail sections are not fetched a second time. Known
+sections are parsed and merged additively; matching records fill empty fields,
+while distinct records are appended. Unknown sections are retained in
+`other_sections` and appended to `raw_text` with their source URL. The original
+profile-page data is restored additively after the legacy pass, so a partial deep
+page response cannot delete data captured on the profile page.
+
+Offline verification: **113 passed, 1 skipped**. The skipped test needs an
+authenticated Playwright browser session. Dynamic discovery has been tested with
+mocked pages and the saved fixtures, but has not been exercised against a live
+authenticated LinkedIn session in this environment. See
+[`RECORDING_REVIEW.md`](RECORDING_REVIEW.md) for recording-derived capture findings
+and limits.

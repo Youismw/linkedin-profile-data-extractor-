@@ -119,3 +119,77 @@ class TestIntegrationHardening:
         required_patterns = ["input/", "output/", ".auth/", "logs/", "tests/fixtures/private/"]
         for pat in required_patterns:
             assert pat in content, f"Missing {pat} in .gitignore"
+
+
+def test_deep_skills_page_supplements_instead_of_replacing_profile_skills(tmp_path: Path) -> None:
+    """A partial detail-page response must not discard skills from the profile page."""
+    profile_url = "https://www.linkedin.com/in/merge-candidate/"
+    skills_url = "https://www.linkedin.com/in/merge-candidate/details/skills/"
+    profile_html = """
+    <html><body><main>
+      <section id="profile-topcard">
+        <h1>Merge Candidate</h1>
+        <div>Software Engineer</div>
+        <div>Delhi, India</div>
+      </section>
+      <section id="skills">
+        <h2>Skills (2)</h2>
+        <div data-component-type="LazyColumn">
+          <div componentkey="entity-collection-item-1"><span>Python</span></div>
+          <div componentkey="entity-collection-item-2"><span>React</span></div>
+        </div>
+      </section>
+    </main></body></html>
+    """
+    skills_html = """
+    <html><body><main><div data-component-type="LazyColumn">
+      <div componentkey="entity-collection-item-1"><span>React</span></div>
+      <div componentkey="entity-collection-item-2"><span>Go</span></div>
+    </div></main></body></html>
+    """
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Profile URLs"])
+    ws.append([profile_url])
+    input_file = tmp_path / "skills_merge_input.xlsx"
+    wb.save(input_file)
+
+    class ExactUrlFetcher:
+        def __init__(self) -> None:
+            self.fetched_urls: list[str] = []
+
+        def fetch(self, url: str) -> FetchResult:
+            self.fetched_urls.append(url)
+            html = {
+                profile_url: profile_html,
+                skills_url: skills_html,
+            }.get(url)
+            if html is None:
+                raise AssertionError(f"Unexpected URL fetched: {url}")
+            return FetchResult(url=url, status=Status.OK, html=html)
+
+        def close(self) -> None:
+            pass
+
+    fetcher = ExactUrlFetcher()
+    output_dir = tmp_path / "skills_merge_output"
+    config = ExtractorConfig(
+        input_file=input_file,
+        output_dir=output_dir,
+        important_fields=["name", "skills"],
+        delay_seconds_min=0,
+        delay_seconds_max=0,
+        stop_on_block=False,
+    )
+
+    summary = run_pipeline(config, fetcher, sleep_fn=lambda _: None)
+    assert summary.ok_count == 1
+    assert skills_url in fetcher.fetched_urls
+
+    import json
+
+    output_file = output_dir / "profiles" / "merge-candidate.json"
+    extracted = json.loads(output_file.read_text(encoding="utf-8"))
+    assert extracted["profile"]["skills"] == ["Python", "React", "Go"]

@@ -629,14 +629,24 @@ def _parse_language_item(tag: Tag) -> LanguageItem:
 
 
 def _parse_other_section(sec: Tag, heading: str) -> OtherSection | None:
-    """Format an unmapped section cleanly into an OtherSection object."""
-    lazy = sec.select_one('[data-component-type="LazyColumn"]')
-    if lazy:
-        items = lazy.select('div[componentkey^="entity-collection-item"]') or [
-            c for c in lazy.children if isinstance(c, Tag)
-        ]
+    """Format an unmapped section cleanly into an OtherSection object.
+
+    Activity has a particularly deep/nested list structure. Walking every nested
+    ``li`` repeats parent and child post content and can pull in unrelated nested
+    video-player menu entries. For Activity only, use the same top-level entity
+    selection as the structured parsers. Other section handling is unchanged.
+    """
+    is_activity = heading.strip().casefold().startswith("activity")
+    if is_activity:
+        items = _get_container_entity_items(sec)
     else:
-        items = sec.find_all("li")
+        lazy = sec.select_one('[data-component-type="LazyColumn"]')
+        if lazy:
+            items = lazy.select('div[componentkey^="entity-collection-item"]') or [
+                c for c in lazy.children if isinstance(c, Tag)
+            ]
+        else:
+            items = sec.find_all("li")
 
     if items:
         item_texts: list[str] = []
