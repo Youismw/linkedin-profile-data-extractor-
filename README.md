@@ -4,6 +4,29 @@
 > **PROTOTYPE / PROOF-OF-CONCEPT NOTICE**
 > This tool's browser automation via Playwright using an employee session is **strictly a temporary proof-of-concept (PoC)** built for an internship demonstration on 5–6 consenting employee profiles. It is **not** approved or architected as-is for production deployment. See [Production Deployment Roadmap](#production-deployment-roadmap--permanent-architecture) below for what is required before any production rollout.
 
+> [!CAUTION]
+> ### 🛑 Anti-Bot Rate Limits & Speed Boundaries (Must-Read)
+> **There is a strict operational limit on how fast extraction can run before LinkedIn flags the session as a bot.**
+>
+> LinkedIn's anti-bot infrastructure (Akamai / PerimeterX) dynamically monitors client interaction speeds. While LinkedIn does not publish static rate limits, the following speed thresholds apply:
+> 1. **Burst Navigation Limit**: No more than **6–8 full-page requests within a 90–120 second window** from the same account session.
+> 2. **Human Interaction Floor**: Scroll step pauses under **`150ms`** (and especially **`50ms`**) trigger client telemetry alarms because no human scrolls down an entire 15,000px page in under a second.
+>
+> #### ⚠️ Real Test Incident: Flagged with HTTP 999
+> During testing, we attempted to run at maximum speed with these exact terminal flags:
+> ```powershell
+> .\run "C:\Users\ROHIT CHAUHAN\Desktop\outputfast\output" --scrollsteps 15 --steptime 50 --disextra
+> ```
+> **What Happened**:
+> * Across the first 3 profiles, the script made **9 rapid page loads in ~100 seconds** (main profile, skills, education, certifications), each scrolled at 50ms per step.
+> * On the 9th page request (`Row 4: certifications subpage`), LinkedIn intercepted the session and returned **`HTTP 999 (Request Denied / Rate Throttled)`**.
+> * The tool's safety guard (`stop_on_block=True`) immediately halted the run, safely saving the 3 already-extracted profiles and preventing the account from escalating to an Arkose CAPTCHA challenge or suspension.
+>
+> #### ✅ Safe Operational Guidelines
+> * **Never set `--steptime` below `150ms`**: We recommend **`200ms`–`250ms`** (default: `250ms`).
+> * **Maintain human polite delays**: Keep inter-profile delays at least **`1.0s`–`2.0s`** (or `0.5s`–`1.0s` in `--fast`).
+> * **For maximum safe speed, skip subpages**: Use **`--no-deep`** to visit only the main profile (1 request per person, ~5–8s per profile). This eliminates 75% of page loads and avoids triggering subpage burst rate limits.
+
 ---
 
 ## Overview

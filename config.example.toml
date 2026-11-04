@@ -47,6 +47,7 @@ scroll_steps = 25
 #   - Pros: Lower step time (e.g., 150ms) delivers significantly faster runtimes.
 #   - Cons: If set too low or on slower internet, dynamic lazy-loaded sections won't load in time.
 #   - 250ms is the balanced default providing both high speed and reliable DOM hydration.
+# WARNING: Do not set below 150ms. Setting --steptime 50 triggered LinkedIn's HTTP 999 anti-bot rate limit during testing.
 scroll_step_delay_ms = 250
 
 # Stale file pruning: when true, removes JSON files not present in current input workbook.
