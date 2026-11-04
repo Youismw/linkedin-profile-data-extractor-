@@ -65,6 +65,7 @@ class ExtractorConfig(BaseModel):
     max_profiles: int | None = Field(default=None)
     headless: bool = Field(default=True)
     deep_details: bool = Field(default=True)
+    disextra: bool = Field(default=False)
     prune_stale: bool = Field(default=False)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")

@@ -274,6 +274,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Prune JSON profiles in output that are not in current input (opt-in)",
     )
+    run_parser.add_argument(
+        "--disextra",
+        dest="disextra",
+        action="store_true",
+        default=False,
+        help="Disable supplemental discovery crawls (activity, interests, etc.) for faster extraction",
+    )
 
     # --------------------------------------------------------------------------
     # Subcommand: 'login' (Interactive session creation)
@@ -573,6 +580,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             overrides["deep_details"] = args.deep_details
         if getattr(args, "prune_stale", False):
             overrides["prune_stale"] = True
+        if getattr(args, "disextra", False):
+            overrides["disextra"] = True
 
         # Load complete runtime configuration with all overrides merged
         config = load_config(args.config_file, overrides=overrides)

@@ -816,7 +816,11 @@ def run_pipeline(
                                 legacy_aliases.get(item, item)
                                 for item in legacy_attempted_sections
                             }
-                            discovered_pages = _discover_profile_detail_pages(main_html, url, slug)
+                            discovered_pages = (
+                                []
+                                if getattr(config, "disextra", False)
+                                else _discover_profile_detail_pages(main_html, url, slug)
+                            )
                             profile_text, _ = _extract_supplemental_page_text(main_html, "profile")
                             profile_text_norm = _normalised_text(profile_text)
                             supplemental_attempts = 0

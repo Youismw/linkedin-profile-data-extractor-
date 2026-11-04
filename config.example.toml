@@ -31,6 +31,9 @@ headless = true
 # Deep details crawling: fetch full skills, experience, and education subpages
 deep_details = true
 
+# Disable supplemental discovery crawls (activity feed, interests, etc.) for much faster runs
+disextra = false
+
 # Stale file pruning: when true, removes JSON files not present in current input workbook.
 # Destructive cleanup is disabled by default to prevent accidental data loss.
 prune_stale = false

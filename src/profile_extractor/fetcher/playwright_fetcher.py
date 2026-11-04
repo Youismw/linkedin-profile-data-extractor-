@@ -302,8 +302,9 @@ class PlaywrightFetcher:
         timeout_seconds: float = 30.0,
         save_raw_html_dir: Path | str | None = None,
         max_scroll_steps: int = 25,
-        scroll_step_delay_ms: int = 350,
+        scroll_step_delay_ms: int = 150,
         interactive_relogin: bool = True,
+        block_images: bool = True,
     ) -> None:
         self.auth_state_path = Path(auth_state_path) if auth_state_path else None
         self.headless = headless
@@ -312,6 +313,7 @@ class PlaywrightFetcher:
         self.max_scroll_steps = max_scroll_steps
         self.scroll_step_delay_ms = scroll_step_delay_ms
         self.interactive_relogin = interactive_relogin
+        self.block_images = block_images
         self._allow_relogin = True
 
         self._playwright: Playwright | None = None
@@ -349,6 +351,19 @@ class PlaywrightFetcher:
             self._context = self._browser.new_context(
                 viewport={"width": 1280, "height": 900},
             )
+
+        if self.block_images and hasattr(self._context, "route"):
+            try:
+                self._context.route(
+                    "**/*",
+                    lambda route: (
+                        route.abort()
+                        if route.request.resource_type in {"image", "media", "font"}
+                        else route.continue_()
+                    ),
+                )
+            except Exception as route_err:
+                get_logger().debug("Could not attach image abort route: %s", route_err)
 
         return self._context
 

@@ -225,6 +225,7 @@ page_timeout_seconds = 30.0
 max_profiles = 0          # 0 or null for unlimited
 headless = true
 deep_details = true       # Unrolls full skills, experience, and education
+disextra = false           # When true, disables activity and interests discovery for much faster runs
 prune_stale = false       # Disabled by default to protect existing output
 stop_on_block = true      # Halts immediately upon CAPTCHA/challenge
 log_level = "INFO"
@@ -232,7 +233,7 @@ log_level = "INFO"
 
 ### Configuration Precedence Order
 When settings are defined across multiple sources, parameters are evaluated with deterministic precedence:
-1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--prune-stale`, `--fast`, `--max-profiles`).
+1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--disextra`, `--prune-stale`, `--fast`, `--max-profiles`).
 2. **Remembered Run State**: Saved paths in `.run_state.json` from previous executions.
 3. **Configuration File**: Values specified in `config.toml` (or custom TOML passed with `-c` / `--config`).
 4. **Application Defaults**: Built-in defaults in `ExtractorConfig`.
