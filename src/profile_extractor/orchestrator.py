@@ -56,6 +56,10 @@ from profile_extractor.models import (
 )
 from profile_extractor.parser import (
     _is_placeholder_value,
+    _merge_complementary_texts,
+    _section_text_subsumed,
+    consolidate_other_sections,
+    normalize_section_heading_key,
     parse_certifications_details,
     parse_education_details,
     parse_experience_details,
@@ -424,10 +428,34 @@ def _append_other_section_additively(
     clean_text = (text or "").strip()
     if not clean_text:
         return
-    for existing in sections:
-        if _normalised_text(existing.heading) == _normalised_text(clean_heading):
-            existing.text = _unique_lines(existing.text, clean_text)
-            return
+    norm_key = normalize_section_heading_key(clean_heading)
+    for i, existing in enumerate(sections):
+        if normalize_section_heading_key(existing.heading) == norm_key:
+            existing_text = existing.text or ""
+            # If incoming text subsumes existing, update with richer content
+            if _section_text_subsumed(existing_text, clean_text):
+                best_heading = (
+                    clean_heading
+                    if not re.search(r"\(\s*\d+\s*\)$", clean_heading)
+                    else existing.heading
+                )
+                sections[i] = OtherSection(heading=best_heading, text=clean_text)
+                return
+            # If existing text already subsumes incoming, keep existing
+            elif _section_text_subsumed(clean_text, existing_text):
+                if re.search(r"\(\s*\d+\s*\)$", existing.heading) and not re.search(
+                    r"\(\s*\d+\s*\)$", clean_heading
+                ):
+                    existing.heading = clean_heading
+                return
+            # Complementary content: merge unique lines
+            else:
+                existing.text = _merge_complementary_texts(existing_text, clean_text)
+                if re.search(r"\(\s*\d+\s*\)$", existing.heading) and not re.search(
+                    r"\(\s*\d+\s*\)$", clean_heading
+                ):
+                    existing.heading = clean_heading
+                return
     sections.append(OtherSection(heading=clean_heading, text=clean_text))
 
 
@@ -901,6 +929,7 @@ def run_pipeline(
                                     doc.other_sections, heading, page_text
                                 )
 
+                        doc.other_sections = consolidate_other_sections(doc.other_sections)
                         _recalculate_missing_fields(doc, config.important_fields)
 
                     write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))

@@ -687,6 +687,108 @@ def _parse_other_section(sec: Tag, heading: str) -> OtherSection | None:
     return None
 
 
+def normalize_section_heading_key(heading: str | None) -> str:
+    """Normalize heading for comparison: ignore case, whitespace, and trailing count in parentheses."""
+    if not heading:
+        return ""
+    norm = " ".join(heading.split()).casefold()
+    return re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", norm).strip()
+
+
+def _section_text_subsumed(smaller_text: str, larger_text: str) -> bool:
+    """Check if all information in smaller_text is present in larger_text."""
+    if not smaller_text or not smaller_text.strip():
+        return True
+    if not larger_text or not larger_text.strip():
+        return False
+    norm_larger = " ".join(larger_text.casefold().split())
+    lines = [ln.strip() for ln in smaller_text.splitlines() if ln.strip()]
+    for line in lines:
+        segments = [s.strip() for s in line.split("|") if s.strip()]
+        for seg in segments:
+            norm_seg = " ".join(seg.casefold().split())
+            if norm_seg and norm_seg not in norm_larger:
+                return False
+    return True
+
+
+def _merge_complementary_texts(text1: str, text2: str) -> str:
+    """Merge complementary section texts preserving all unique lines without loss."""
+    seen: set[str] = set()
+    merged: list[str] = []
+    for text in (text1, text2):
+        for line in text.splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            norm = " ".join(line_str.casefold().split())
+            if norm not in seen:
+                seen.add(norm)
+                merged.append(line_str)
+    return "\n".join(merged)
+
+
+def consolidate_other_sections(sections: list[OtherSection]) -> list[OtherSection]:
+    """Consolidate duplicate section representations in other_sections.
+
+    - Normalizes section headings ignoring case, whitespace, and trailing count in parentheses.
+    - When one representation contains all information in the other, retains the more complete one.
+    - If complementary, merges unique content.
+    - If cannot be safely reconciled, preserves both.
+    """
+    if not sections or len(sections) <= 1:
+        return list(sections)
+
+    consolidated: list[OtherSection] = []
+    for sec in sections:
+        sec_key = normalize_section_heading_key(sec.heading)
+        if not sec_key:
+            consolidated.append(sec)
+            continue
+
+        matched_index = -1
+        for i, existing in enumerate(consolidated):
+            if normalize_section_heading_key(existing.heading) == sec_key:
+                matched_index = i
+                break
+
+        if matched_index == -1:
+            consolidated.append(sec)
+            continue
+
+        existing = consolidated[matched_index]
+        existing_text = existing.text or ""
+        sec_text = sec.text or ""
+
+        # Case 1: sec subsumes existing -> retain sec (the more complete representation)
+        if _section_text_subsumed(existing_text, sec_text):
+            best_heading = (
+                sec.heading
+                if not re.search(r"\(\s*\d+\s*\)$", sec.heading)
+                else existing.heading
+            )
+            consolidated[matched_index] = OtherSection(heading=best_heading, text=sec_text)
+        # Case 2: existing subsumes sec -> retain existing
+        elif _section_text_subsumed(sec_text, existing_text):
+            if re.search(r"\(\s*\d+\s*\)$", existing.heading) and not re.search(
+                r"\(\s*\d+\s*\)$", sec.heading
+            ):
+                consolidated[matched_index] = OtherSection(
+                    heading=sec.heading, text=existing.text
+                )
+        # Case 3: complementary information -> merge unique lines
+        else:
+            merged_text = _merge_complementary_texts(existing_text, sec_text)
+            best_heading = (
+                sec.heading
+                if not re.search(r"\(\s*\d+\s*\)$", sec.heading)
+                else existing.heading
+            )
+            consolidated[matched_index] = OtherSection(heading=best_heading, text=merged_text)
+
+    return consolidated
+
+
 def _is_valid_skill(cand: str) -> bool:
     """Validate whether an extracted line is genuinely a skill name."""
     if not cand or len(cand) > 60:
@@ -1099,7 +1201,8 @@ def parse_profile(
                 flags=re.IGNORECASE,
             ).strip()
             if body_text:
-                about = body_text
+                if not about or len(body_text) > len(about):
+                    about = body_text
             continue
 
         # 4b. Check Experience
@@ -1181,6 +1284,8 @@ def parse_profile(
         parsed_other = _parse_other_section(sec, heading or "Additional Information")
         if parsed_other:
             other_sections.append(parsed_other)
+
+    other_sections = consolidate_other_sections(other_sections)
 
     # --------------------------------------------------------------------------
     # 5. Construct Profile Model
