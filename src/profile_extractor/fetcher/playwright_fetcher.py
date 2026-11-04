@@ -58,7 +58,8 @@ _CAPTURE_PROFILE_CARDS_JS = r"""() => {
     const profileCardSelectors =
         '[id^="com.linkedin.sdui.profile.card."], ' +
         '[id^="profileCardsAboveActivity"], ' +
-        '[id^="profileCardsBelowActivity"]';
+        '[id^="profileCardsBelowActivity"], ' +
+        '#about, section[data-section="about"], [id$="About"]';
     // Skills detail pages can virtualize entity cards as the list scrolls. Capture
     // those cards too, but only on /details/skills/ to avoid broad DOM snapshots
     // or changing capture behaviour on ordinary profile pages.
@@ -68,11 +69,15 @@ _CAPTURE_PROFILE_CARDS_JS = r"""() => {
     const cards = root.querySelectorAll(selectors);
 
     for (const card of cards) {
-        const id = card.getAttribute('id');
+        let id = card.getAttribute('id');
         const componentKey = card.getAttribute('componentkey');
         const isSkillEntityItem = isSkillsDetails
             && componentKey
             && componentKey.includes('entity-collection-item');
+        if (!id && card.getAttribute('data-section') === 'about') {
+            id = 'about';
+            try { card.setAttribute('id', id); } catch (e) {}
+        }
         const key = isSkillEntityItem
             ? `componentkey:${componentKey}`
             : (id ? `id:${id}` : '');
@@ -113,6 +118,49 @@ _GET_CAPTURED_PROFILE_CARDS_JS = r"""() => {
     const state = window.__profileExtractorCapturedCardsV1;
     if (!state) return [];
     return state.order.map(id => state.cards[id]?.html).filter(Boolean);
+}"""
+
+_WAIT_FOR_MEANINGFUL_ABOUT_JS = r"""() => {
+    const bodyText = (document.body?.innerText || '').toLowerCase();
+    const terminalPage = [
+        'sign in to view',
+        'security verification',
+        'page not found',
+        'profile unavailable'
+    ].some(token => bodyText.includes(token));
+    if (terminalPage) return true;
+
+    // Check SDUI About card
+    const sduiAbout = document.querySelector(
+        '[id^="com.linkedin.sdui.profile.card."][id*="About"], [id$="About"]'
+    );
+    if (sduiAbout) {
+        const text = (sduiAbout.innerText || sduiAbout.textContent || '').trim();
+        if (text.length > 20) return true;
+    }
+
+    // Check legacy About sections
+    const legacyAbout = document.querySelector(
+        '#about, section[data-section="about"], [data-section="about"]'
+    );
+    if (legacyAbout) {
+        const text = (legacyAbout.innerText || legacyAbout.textContent || '').trim();
+        if (text.length > 20) return true;
+    }
+
+    // Check heading-based About sections
+    const headings = document.querySelectorAll('h2, h3');
+    for (const h of headings) {
+        const hText = (h.innerText || h.textContent || '').trim().toLowerCase();
+        if (hText === 'about' || hText.startsWith('about ')) {
+            const sec = h.closest('section') || h.parentElement;
+            if (sec) {
+                const text = (sec.innerText || sec.textContent || '').trim();
+                if (text.length > 20) return true;
+            }
+        }
+    }
+    return false;
 }"""
 
 
@@ -316,6 +364,18 @@ class PlaywrightFetcher:
                         logger.warning(
                             "Profile shell did not reach the expected ready state within 15s; "
                             "continuing with incremental capture."
+                        )
+
+                    # Wait specifically for meaningful About content to appear (max 15s).
+                    # Stops waiting immediately once it appears; if not within 15s, continues normally.
+                    try:
+                        page.wait_for_function(
+                            _WAIT_FOR_MEANINGFUL_ABOUT_JS,
+                            timeout=min(self.timeout_ms, 15000),
+                        )
+                    except PlaywrightTimeoutError:
+                        logger.debug(
+                            "About section did not reach ready state within 15s; continuing with capture."
                         )
 
                 # Capture profile cards before the first scroll. We also capture after
