@@ -64,6 +64,7 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | Command | Shorthand | What It Does & When to Use |
 |---|---|---|
 | `.\run.bat` | `.\run` | **Primary 1-Click Runner**: Checks LinkedIn session health. If missing/expired, opens a visible browser for 2FA login. Automatically picks up input from `input/*.xlsx`, processes profiles with polite human delays (1.0–2.0s), preserves prior outputs by default, saves JSON files to `output/profiles/`, and **automatically opens the output folder in Windows Explorer**. |
+| `.\run_gui.bat` / `.\gui.bat` | `.\run gui` | **Desktop GUI Assistant**: Launches the native Tkinter graphical interface with file/folder pickers, interactive speed/depth sliders, toggle flares, inline button explanations, and live streaming console logs. |
 | `.\run.bat "<input>" "<output>"` | `.\run "in.xlsx" "out"` | **Custom Paths Runner**: Runs on an input file anywhere on the machine and writes to any output folder. **Persists these paths** in `.run_state.json` so future bare `.\run` runs remember them without retyping. |
 | `.\run.bat "output\<out_dir>"` | `.\run "output\C:\path"` / `.\run "C:\path\output"` | **Output-Only Override**: Changes the output folder without re-specifying the input file. Recognizes `output\` prefix or `\output` suffix, keeping the default/remembered spreadsheet. |
 | `.\run.bat --prune-stale` | `.\run --prune-stale` | **Safe Stale File Cleanup**: Opt-in flag to delete JSON files from previous batches that are no longer in the input spreadsheet. Disabled by default to prevent accidental data loss. |
@@ -451,12 +452,31 @@ and limits.
 
 ---
 
-## Roadmap & Planned Features
+## Desktop GUI Assistant
 
-### Basic GUI Assistant
-A lightweight, very basic graphical user interface (GUI) is planned to make configuring terminal flags (options / "flares" such as `--scrollsteps`, `--steptime`, `--disextra`, `--fast`, `--visible`) effortless, and to let users select input spreadsheets and output directories using intuitive mouse or keyboard file pickers.
+The tool includes a lightweight, native graphical user interface (`gui.bat` / `run_gui.bat` or `.\run gui`) built with Python's standard `tkinter` library. It makes configuring crawler flags ("flares") effortless, allowing you to select spreadsheets and destination folders via mouse pickers and tune speed settings without memorizing command-line syntax.
 
-To make the interface clear and self-explanatory:
-* **Inline Button Explanations**: Each button, toggle, and setting in the GUI will feature a small explanation bit directly below it, clarifying exactly what the flare does, its runtime vs. data-completeness trade-offs (such as scroll steps and step delay speed impact), and when to use it.
-* **Development Status**: While terminal execution remains the primary engine for automation, batch runs, and headless pipelines, this GUI helper is planned for convenience (though it is not a current development focus).
+### Key GUI Features & Inline Explanations
+* **File & Folder Pickers**: Select input candidate spreadsheets (`.xlsx`, `.xlsm`, `.csv`) and output directories with native Windows dialogs. Synchronizes automatically with `.run_state.json` so CLI and GUI share remembered paths.
+* **Inline Explanations Below Every Control**:
+  * **Disable Supplemental Feeds (`--disextra`)**: *"Skips /recent-activity/ and /details/interests/ for 3x–4x faster run. Recommended for resume extraction."*
+  * **Scroll Depth Steps (`--scrollsteps`)**: Slider (0 to 100, default `25`). *"25 steps gets ~80% of lazy DOM; 40 steps gets ~90%+. Fewer steps = faster, more steps = fuller data."*
+  * **Scroll Step Delay (`--steptime`)**: Slider (50 to 1000 ms, default `250`). *"Delay between scrolls. Faster vs safer. Keep >= 150ms to avoid bot rate limits."*
+  * **Single-Page Fast Mode (`--fast` / `--no-deep`)**: *"Extracts top card only without visiting deep subpages (~5s/profile)."*
+  * **Show Chromium Browser (`--visible`)**: *"Opens browser visibly so you can watch live page navigation."*
+  * **Prune Old Profiles (`--prune`)**: *"Clears old JSON profiles from output directory before starting."*
+* **Process Controls**:
+  * **[ ▶ Start Extraction ]**: Spawns the pipeline with real-time stdout streaming into a dark-themed log console.
+  * **[ ⏹ Stop ]**: Terminate button that cleanly kills the process tree (including any spawned Chromium browser processes).
+  * **[ 🔑 LinkedIn Login ]**: Triggers interactive login browser helper if session cookies expire.
+  * **[ 📂 Open Output Folder ]**: Directly reveals the output directory in Windows Explorer.
+* **Launching the GUI**:
+  ```powershell
+  # Method 1: Double-click either batch file from Windows Explorer or run in terminal
+  .\run_gui.bat
+  .\gui.bat
+
+  # Method 2: Use the standard runner
+  .\run gui
+  ```
 

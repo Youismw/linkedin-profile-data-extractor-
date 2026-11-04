@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 profile-extractor = "profile_extractor.cli:main"
+profile-extractor-gui = "profile_extractor.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

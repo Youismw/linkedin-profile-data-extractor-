@@ -351,6 +351,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clear only the LinkedIn session cookie, preserving remembered paths",
     )
 
+    # --------------------------------------------------------------------------
+    # Subcommand: 'gui' (Graphical user interface)
+    # --------------------------------------------------------------------------
+    subparsers.add_parser(
+        "gui",
+        help="Launch the graphical user interface assistant",
+    )
+
     return parser
 
 
@@ -379,6 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "clean-session",
         "reset-session",
         "reset",
+        "gui",
         "-h",
         "--help",
     ]
@@ -446,6 +455,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as e:
             print(f"Login failed: {e}", file=sys.stderr)
             return 1
+
+    # ==========================================================================
+    # Handler: gui (Graphical User Interface)
+    # ==========================================================================
+    if args.command == "gui":
+        from profile_extractor.gui import launch_gui
+
+        return launch_gui()
 
     # ==========================================================================
     # Handler: run (Extraction Pipeline Execution)
