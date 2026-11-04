@@ -123,7 +123,7 @@ def _extract_section_heading(section: Tag) -> str:
     for heading_tag in section.find_all(["h2", "h3", "header"], recursive=True):
         # Ignore headings belonging to a child <section>
         parent_sec = heading_tag.find_parent("section")
-        if parent_sec is not None and parent_sec != section:
+        if parent_sec is not None and parent_sec is not section:
             continue
         txt = _clean_text(heading_tag.get_text(separator=" "))
         if txt:
@@ -142,14 +142,36 @@ def _extract_section_heading(section: Tag) -> str:
     return ""
 
 
+def _dedupe_certifications(items: Sequence[CertificationItem]) -> list[CertificationItem]:
+    """Remove exact duplicate certification cards while preserving DOM order.
+
+    LinkedIn can render the same credential more than once in its DOM (for
+    example, responsive/duplicated card markup). Only byte-for-field identical
+    parsed records are removed; records with different dates, IDs, URLs, or raw
+    text are retained as potentially distinct credentials.
+    """
+    seen: set[str] = set()
+    result: list[CertificationItem] = []
+    for item in items:
+        key = item.model_dump_json()
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 def _filter_top_level_tags(tags: Sequence[Tag]) -> list[Tag]:
     """Filter out descendant tags so only top-level container tags are retained.
 
     Guards against descendant duplication where an entity card contains nested
     collection items or listitems.
     """
-    tag_set = set(tags)
-    return [t for t in tags if not any(p in tag_set for p in t.parents)]
+    # BeautifulSoup Tag hashing/equality traverses serialized descendant HTML.
+    # These candidates are DOM nodes, so identity is the intended comparison.
+    tag_ids = {id(tag) for tag in tags}
+    return [
+        tag for tag in tags if not any(id(parent) in tag_ids for parent in tag.parents)
+    ]
 
 
 def _get_container_entity_items(container: Tag) -> list[Tag]:
@@ -740,7 +762,7 @@ def parse_certifications_details(html: str) -> list[CertificationItem]:
         cert = _parse_certification_item(it)
         if cert.name or cert.raw:
             results.append(cert)
-    return results
+    return _dedupe_certifications(results)
 
 
 def parse_projects_details(html: str) -> list[ProjectItem]:
@@ -875,9 +897,16 @@ def parse_profile(
             r"^\d+\s+notification", sec.get_text(separator=" ", strip=True), re.IGNORECASE
         )
     ]
-    cand_sec_set = set(candidate_sections)
+    # BeautifulSoup Tag.__hash__ serializes the entire subtree. Using Tags as
+    # set members here makes nested-section filtering quadratic (and very slow
+    # on large LinkedIn pages). Section membership is identity-based, so use
+    # object identities instead; this preserves the exact ancestor test while
+    # making each membership lookup O(1) without hashing HTML.
+    candidate_section_ids = {id(sec) for sec in candidate_sections}
     valid_sections: list[Tag] = [
-        sec for sec in candidate_sections if not any(p in cand_sec_set for p in sec.parents)
+        sec
+        for sec in candidate_sections
+        if not any(id(parent) in candidate_section_ids for parent in sec.parents)
     ]
 
     # Strategy A: Check <h1> tags (rejecting generic error page headings)
@@ -1021,7 +1050,7 @@ def parse_profile(
         seen_sections.add(id(sec))
 
         # Skip top card section
-        if top_card and sec == top_card:
+        if top_card is not None and sec is top_card:
             continue
 
         heading = _extract_section_heading(sec)
@@ -1151,7 +1180,7 @@ def parse_profile(
         experience=experience,
         education=education,
         skills=skills,
-        certifications=certifications,
+        certifications=_dedupe_certifications(certifications or []),
         projects=projects,
         languages=languages,
     )

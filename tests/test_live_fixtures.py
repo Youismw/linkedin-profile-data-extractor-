@@ -180,3 +180,19 @@ class TestLiveFixturesExtraction:
         assert "Next.js" in skills
         assert "Flutter" in skills
         assert "Problem Solving" in skills
+
+
+def test_identical_certification_cards_are_deduplicated() -> None:
+    """Responsive duplicate DOM cards must not create duplicate credentials."""
+    html_path = LIVE_FIXTURES_DIR / "shruti-dwivedi-aba0b425b.html"
+    html = html_path.read_text(encoding="utf-8")
+    doc = parse_profile(
+        source_url="https://www.linkedin.com/in/shruti-dwivedi-aba0b425b/",
+        slug="shruti-dwivedi-aba0b425b",
+        html=html,
+        status=Status.OK,
+        important_fields=DEFAULT_IMPORTANT_FIELDS,
+    )
+    certs = doc.profile.certifications or []
+    serialized = [item.model_dump_json() for item in certs]
+    assert len(serialized) == len(set(serialized))
