@@ -388,7 +388,7 @@ class PlaywrightFetcher:
                                     '[id^="com.linkedin.sdui.profile.card."]'
                                 );
                                 const cardText = (card?.innerText || '').trim();
-                                const heading = main?.querySelector('h1');
+                                const heading = main?.querySelector('h1, h2, h3');
                                 const mainText = (main?.innerText || '').trim();
                                 const bodyText = (document.body?.innerText || '').toLowerCase();
                                 const terminalPage = [
@@ -398,13 +398,14 @@ class PlaywrightFetcher:
                                     'profile unavailable'
                                 ].some(token => bodyText.includes(token));
                                 return terminalPage || (card && cardText.length > 40)
-                                    || (heading && mainText.length > 40);
+                                    || (heading && mainText.length > 40)
+                                    || (mainText.length > 100);
                             }""",
                             timeout=min(self.timeout_ms, 1000),
                         )
                     except PlaywrightTimeoutError:
-                        logger.warning(
-                            "Profile shell did not reach the expected ready state within 15s; "
+                        logger.debug(
+                            "Profile shell did not reach the expected ready state within 1s; "
                             "continuing with incremental capture."
                         )
 
