@@ -66,6 +66,7 @@ class ExtractorConfig(BaseModel):
     headless: bool = Field(default=True)
     deep_details: bool = Field(default=True)
     disextra: bool = Field(default=False)
+    scroll_steps: int = Field(default=25, ge=0, le=100)
     prune_stale: bool = Field(default=False)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")

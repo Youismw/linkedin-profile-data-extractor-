@@ -148,6 +148,8 @@ class TestConfig:
         assert cfg.headless is True
         assert cfg.stop_on_block is True
         assert cfg.log_level == "INFO"
+        assert cfg.disextra is False
+        assert cfg.scroll_steps == 25
         assert "name" in cfg.important_fields
         assert "skills" in cfg.important_fields
 
@@ -188,6 +190,12 @@ class TestConfig:
         # empty important fields
         with pytest.raises(ValidationError, match="cannot be empty"):
             ExtractorConfig(important_fields=[])
+
+        # scroll_steps out of bounds
+        with pytest.raises(ValidationError):
+            ExtractorConfig(scroll_steps=-1)
+        with pytest.raises(ValidationError):
+            ExtractorConfig(scroll_steps=101)
 
 
 class TestLoggingSetup:

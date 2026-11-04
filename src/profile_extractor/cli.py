@@ -281,6 +281,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Disable supplemental discovery crawls (activity, interests, etc.) for faster extraction",
     )
+    run_parser.add_argument(
+        "--scrollsteps",
+        "--scroolsteps",
+        "--scroll-steps",
+        dest="scroll_steps",
+        type=int,
+        default=None,
+        help=(
+            "Number of scroll steps per page (0 to 100, default: 25). "
+            "More steps = fuller data but more time; fewer steps = faster but emptier."
+        ),
+    )
 
     # --------------------------------------------------------------------------
     # Subcommand: 'login' (Interactive session creation)
@@ -582,6 +594,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             overrides["prune_stale"] = True
         if getattr(args, "disextra", False):
             overrides["disextra"] = True
+        if getattr(args, "scroll_steps", None) is not None:
+            if not (0 <= args.scroll_steps <= 100):
+                print(
+                    f"Error: --scrollsteps must be between 0 and 100 (got {args.scroll_steps})",
+                    file=sys.stderr,
+                )
+                return 1
+            overrides["scroll_steps"] = args.scroll_steps
 
         # Load complete runtime configuration with all overrides merged
         config = load_config(args.config_file, overrides=overrides)
@@ -614,6 +634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 auth_state_path=config.auth_state_path,
                 headless=config.headless,
                 timeout_seconds=config.page_timeout_seconds,
+                max_scroll_steps=config.scroll_steps,
             )
 
         # ----------------------------------------------------------------------

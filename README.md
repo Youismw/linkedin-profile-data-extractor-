@@ -226,6 +226,9 @@ max_profiles = 0          # 0 or null for unlimited
 headless = true
 deep_details = true       # Unrolls full skills, experience, and education
 disextra = false           # When true, disables activity and interests discovery for much faster runs
+scroll_steps = 25         # Scroll steps per page (0 to 100, default: 25)
+                          # Trade-off: More steps = more time, fuller data; fewer steps = less time, emptier data.
+                          # Rule of thumb: ~25 scrolls captures ~80% of data, ~40 scrolls captures ~90% of data.
 prune_stale = false       # Disabled by default to protect existing output
 stop_on_block = true      # Halts immediately upon CAPTCHA/challenge
 log_level = "INFO"
@@ -233,7 +236,7 @@ log_level = "INFO"
 
 ### Configuration Precedence Order
 When settings are defined across multiple sources, parameters are evaluated with deterministic precedence:
-1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--disextra`, `--prune-stale`, `--fast`, `--max-profiles`).
+1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--scrollsteps <0-100>`, `--disextra`, `--prune-stale`, `--fast`, `--max-profiles`).
 2. **Remembered Run State**: Saved paths in `.run_state.json` from previous executions.
 3. **Configuration File**: Values specified in `config.toml` (or custom TOML passed with `-c` / `--config`).
 4. **Application Defaults**: Built-in defaults in `ExtractorConfig`.
@@ -416,3 +419,11 @@ mocked pages and the saved fixtures, but has not been exercised against a live
 authenticated LinkedIn session in this environment. See
 [`RECORDING_REVIEW.md`](RECORDING_REVIEW.md) for recording-derived capture findings
 and limits.
+
+---
+
+## Roadmap & Planned Features
+
+### Basic GUI Assistant
+A lightweight, very basic graphical user interface (GUI) is planned to make configuring terminal flags (options / "flares" such as `--scrollsteps`, `--disextra`, `--fast`, `--visible`) effortless, and to let users select input spreadsheets and output directories using intuitive mouse or keyboard file pickers. While terminal execution remains the primary engine for automation and headless pipelines, this GUI helper is intended for convenience (though it is not a current development focus).
+

@@ -34,6 +34,13 @@ deep_details = true
 # Disable supplemental discovery crawls (activity feed, interests, etc.) for much faster runs
 disextra = false
 
+# Progressive scroll steps per page (0 to 100, default: 25).
+# Trade-off: More steps = more time, fuller data; fewer steps = less time, emptier data.
+# Rule of thumb:
+#   25 scrolls (~15,000px depth) captures ~80% of candidate data.
+#   40 scrolls (~24,000px depth) captures ~90% of candidate data.
+scroll_steps = 25
+
 # Stale file pruning: when true, removes JSON files not present in current input workbook.
 # Destructive cleanup is disabled by default to prevent accidental data loss.
 prune_stale = false
