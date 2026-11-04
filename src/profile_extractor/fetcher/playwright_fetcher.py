@@ -302,7 +302,7 @@ class PlaywrightFetcher:
         timeout_seconds: float = 30.0,
         save_raw_html_dir: Path | str | None = None,
         max_scroll_steps: int = 25,
-        scroll_step_delay_ms: int = 150,
+        scroll_step_delay_ms: int = 250,
         interactive_relogin: bool = True,
         block_images: bool = True,
     ) -> None:

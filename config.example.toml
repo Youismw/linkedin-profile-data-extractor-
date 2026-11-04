@@ -41,6 +41,14 @@ disextra = false
 #   40 scrolls (~24,000px depth) captures ~90% of candidate data.
 scroll_steps = 25
 
+# Delay between incremental scroll steps in milliseconds (default: 250).
+# Sets the pause duration between scroll increments (typically 150ms to 350ms).
+# Trade-off:
+#   - Pros: Lower step time (e.g., 150ms) delivers significantly faster runtimes.
+#   - Cons: If set too low or on slower internet, dynamic lazy-loaded sections won't load in time.
+#   - 250ms is the balanced default providing both high speed and reliable DOM hydration.
+scroll_step_delay_ms = 250
+
 # Stale file pruning: when true, removes JSON files not present in current input workbook.
 # Destructive cleanup is disabled by default to prevent accidental data loss.
 prune_stale = false

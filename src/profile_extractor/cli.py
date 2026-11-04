@@ -293,6 +293,17 @@ def build_parser() -> argparse.ArgumentParser:
             "More steps = fuller data but more time; fewer steps = faster but emptier."
         ),
     )
+    run_parser.add_argument(
+        "--steptime",
+        "--step-time",
+        dest="step_time",
+        type=int,
+        default=None,
+        help=(
+            "Delay between scroll steps in milliseconds (50 to 5000, default: 250). "
+            "Pros: lower = faster runtime. Cons: too low = dynamic sections may not load in time."
+        ),
+    )
 
     # --------------------------------------------------------------------------
     # Subcommand: 'login' (Interactive session creation)
@@ -602,6 +613,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 1
             overrides["scroll_steps"] = args.scroll_steps
+        if getattr(args, "step_time", None) is not None:
+            if not (50 <= args.step_time <= 5000):
+                print(
+                    f"Error: --steptime must be between 50 and 5000 ms (got {args.step_time})",
+                    file=sys.stderr,
+                )
+                return 1
+            overrides["scroll_step_delay_ms"] = args.step_time
 
         # Load complete runtime configuration with all overrides merged
         config = load_config(args.config_file, overrides=overrides)
@@ -635,6 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 headless=config.headless,
                 timeout_seconds=config.page_timeout_seconds,
                 max_scroll_steps=config.scroll_steps,
+                scroll_step_delay_ms=config.scroll_step_delay_ms,
             )
 
         # ----------------------------------------------------------------------

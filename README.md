@@ -46,6 +46,9 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | `.\run.bat --prune-stale` | `.\run --prune-stale` | **Safe Stale File Cleanup**: Opt-in flag to delete JSON files from previous batches that are no longer in the input spreadsheet. Disabled by default to prevent accidental data loss. |
 | `.\run.bat --fake` | `.\run --fake` | **Offline / Demo Mode**: Executes the entire pipeline against simulated synthetic profile fixtures with zero network calls. Perfect for safe presentations and testing. |
 | `.\run.bat --fast` | `.\run --fast` | **High-Speed Mode**: Reduces polite delays between profiles to 0.5s–1.0s (instead of 1.0s–2.0s) for rapid testing or swift demos. |
+| `.\run.bat --disextra` | `.\run --disextra` | **Fast Mode (Skip Extras)**: Skips supplemental discovery crawls (`/recent-activity/` and `/details/interests/`) to cut extraction time from ~2 minutes per profile down to ~15-20 seconds while retaining full profile, skills, experience, and education. |
+| `.\run.bat --scrollsteps 25` | `.\run --scrollsteps <x>` | **Scroll Depth Limit**: Sets maximum progressive scroll steps (0 to 100, default: `25`). **Trade-off**: More steps = more time, fuller data; fewer steps = faster but emptier. (~25 scrolls captures ~80% of data, ~40 scrolls captures ~90%). |
+| `.\run.bat --steptime 250` | `.\run --steptime <ms>` | **Scroll Step Pause**: Delay between scroll increments in milliseconds (default: `250`). **Pros**: Lower time (e.g. 150ms) runs significantly faster. **Cons**: If set too low, dynamic lazy-loaded sections won't load in time before scrolling past. |
 | `.\run.bat --max-profiles 3` | `.\run --max-profiles 3` | **Profile Cap**: Stops processing after processing the specified number of valid profiles; unvisited valid profiles are reconciled in `not_processed_count`. |
 | `.\run.bat login` | `python -m profile_extractor login` | **Stand-alone Login Helper**: Explicitly opens a visible Chromium browser to `https://www.linkedin.com/login` and exports active cookies to `.auth/state.json`. |
 | `.\run.bat logout` | `.\run logout` / `.\run clean-session` | **Clean Session**: Manually clears saved `.auth/state.json` so future runs prompt for login (pass `--all` to also reset remembered paths). |
@@ -229,6 +232,9 @@ disextra = false           # When true, disables activity and interests discover
 scroll_steps = 25         # Scroll steps per page (0 to 100, default: 25)
                           # Trade-off: More steps = more time, fuller data; fewer steps = less time, emptier data.
                           # Rule of thumb: ~25 scrolls captures ~80% of data, ~40 scrolls captures ~90% of data.
+scroll_step_delay_ms = 250 # Pause between scroll increments in ms (default: 250)
+                          # Pros: Lower value (e.g. 150ms) yields significantly faster runtime per profile.
+                          # Cons: If set too low, dynamic lazy-loaded sections won't load in time before scrolling past.
 prune_stale = false       # Disabled by default to protect existing output
 stop_on_block = true      # Halts immediately upon CAPTCHA/challenge
 log_level = "INFO"
@@ -236,7 +242,7 @@ log_level = "INFO"
 
 ### Configuration Precedence Order
 When settings are defined across multiple sources, parameters are evaluated with deterministic precedence:
-1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--scrollsteps <0-100>`, `--disextra`, `--prune-stale`, `--fast`, `--max-profiles`).
+1. **Explicit CLI Arguments**: Options passed on the command line (e.g. `--input`, `--output`, `--scrollsteps <0-100>`, `--steptime <ms>`, `--disextra`, `--prune-stale`, `--fast`, `--max-profiles`).
 2. **Remembered Run State**: Saved paths in `.run_state.json` from previous executions.
 3. **Configuration File**: Values specified in `config.toml` (or custom TOML passed with `-c` / `--config`).
 4. **Application Defaults**: Built-in defaults in `ExtractorConfig`.

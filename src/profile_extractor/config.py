@@ -67,6 +67,7 @@ class ExtractorConfig(BaseModel):
     deep_details: bool = Field(default=True)
     disextra: bool = Field(default=False)
     scroll_steps: int = Field(default=25, ge=0, le=100)
+    scroll_step_delay_ms: int = Field(default=250, ge=50, le=5000)
     prune_stale: bool = Field(default=False)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")
@@ -149,6 +150,11 @@ def load_config(
         for k, v in overrides.items():
             if v is not None:
                 data[k] = v
+
+    if "steptime" in data and "scroll_step_delay_ms" not in data:
+        data["scroll_step_delay_ms"] = data.pop("steptime")
+    if "step_time" in data and "scroll_step_delay_ms" not in data:
+        data["scroll_step_delay_ms"] = data.pop("step_time")
 
     # 3. Validate against Pydantic schema
     return ExtractorConfig.model_validate(data)

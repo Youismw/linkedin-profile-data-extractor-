@@ -150,6 +150,7 @@ class TestConfig:
         assert cfg.log_level == "INFO"
         assert cfg.disextra is False
         assert cfg.scroll_steps == 25
+        assert cfg.scroll_step_delay_ms == 250
         assert "name" in cfg.important_fields
         assert "skills" in cfg.important_fields
 
@@ -196,6 +197,12 @@ class TestConfig:
             ExtractorConfig(scroll_steps=-1)
         with pytest.raises(ValidationError):
             ExtractorConfig(scroll_steps=101)
+
+        # scroll_step_delay_ms out of bounds
+        with pytest.raises(ValidationError):
+            ExtractorConfig(scroll_step_delay_ms=10)
+        with pytest.raises(ValidationError):
+            ExtractorConfig(scroll_step_delay_ms=10000)
 
 
 class TestLoggingSetup:
