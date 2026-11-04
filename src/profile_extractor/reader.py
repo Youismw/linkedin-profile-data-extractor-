@@ -1,11 +1,25 @@
 """Excel reader for extracting LinkedIn profile URLs.
 
-Provides tolerant extraction of URLs from Excel spreadsheets:
-- Automatically detects and skips header rows (e.g., 'Profile URL', 'Candidate Links').
-- Resolves raw text URLs and cell hyperlink targets (e.g. friendly display text
-  pointing to a hyperlink).
-- Tolerates empty cells and trailing blank rows.
-- Deduplicates repeated profile links while preserving accurate row accounting.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module is responsible for reading candidate spreadsheets (.xlsx, .xlsm, .csv),
+handling malformed cell structures, resolving =HYPERLINK formulas, skipping header
+lines, deduplicating candidate URLs, and returning typed ReadResult structures.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.orchestrator`:
+     * Calls `read_profile_urls(input_file)` at the beginning of the pipeline run.
+   - Unit tests in `tests/test_urls_and_reader.py`.
+
+2. Downstream Dependencies:
+   - `profile_extractor.urls`:
+     * Calls `normalize_profile_url()` to validate and canonicalize profile URLs.
+     * Calls `extract_slug()` to extract the raw candidate slug handle.
+     * Calls `sanitize_slug()` to generate safe filename stems.
+   - `openpyxl`: Reads Excel .xlsx and .xlsm workbooks.
+   - `csv`: Reads fallback comma-separated files.
 """
 
 import csv

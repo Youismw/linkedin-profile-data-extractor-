@@ -1,10 +1,22 @@
 """Outcome detection logic based on URL and page HTML inspection.
 
-Centralizes all failure heuristics into a single module:
-1. BLOCKED: Security challenges, CAPTCHAs, bot detections, or HTTP 429/999.
-2. NOT_FOUND: HTTP 404 status codes or 'Profile not found' / 'Page does not exist'.
-3. NOT_VISIBLE: Redirects to /authwall or /login when session cookies expire.
-4. OK: Normal accessible profile DOM.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module serves as the centralized classifier for HTTP status codes, URL redirects,
+and DOM response signatures. It categorizes every page navigation into standardized
+Status (OK, UNREACHABLE) and Reason (BLOCKED, NOT_FOUND, NOT_VISIBLE, OK).
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.fetcher.playwright_fetcher`:
+     * Calls `detect_outcome(status_code, final_url, html)` immediately after each
+       page navigation to determine whether content is viewable or blocked.
+   - Unit tests in `tests/test_detection.py`.
+
+2. Downstream Dependencies:
+   - `profile_extractor.models`:
+     * Returns `(Status, Reason | None)` enum instances.
 """
 
 import re

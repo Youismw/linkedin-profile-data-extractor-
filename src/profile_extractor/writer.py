@@ -1,12 +1,25 @@
 """Atomic and compliant file writer for profile documents, summaries, and reports.
 
-Core responsibilities:
-1. Writes individual profile documents as indented UTF-8 JSON files (<slug>.json).
-2. Generates unreachable_profiles.xlsx auditing any failed profiles.
-3. Generates run_summary.json reconciling processing statistics.
-4. Uses atomic filesystem operations (writing to temporary files and renaming)
-   to ensure zero half-written or corrupted files during crashes or interrupts.
-5. Applies restrictive permission bits (0o600) where supported by the OS.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module is responsible for durable, crash-resilient persistence of pipeline outputs.
+It performs atomic writes via temporary files and `os.replace` to prevent corrupted or
+half-written files, creating individual candidate JSON files, summary reports, and Excel audits.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.orchestrator`:
+     * Calls `write_profile_json(doc, output_dir)` after each successfully parsed candidate.
+     * Calls `write_unreachable_report(unreachable, output_dir)` to write unreachable_profiles.xlsx.
+     * Calls `write_run_summary(summary, output_dir)` to write run_summary.json.
+     * Calls `profile_filename_stem(doc)` for filesystem path determination.
+   - Unit tests in `tests/test_writer.py`.
+
+2. Downstream Dependencies:
+   - `profile_extractor.models`: Consumes `ProfileDocument`, `RunSummary`, `UnreachableRecord`.
+   - `profile_extractor.urls`: Calls `sanitize_slug()` for filename generation.
+   - `openpyxl`: Generates the formatted Excel audit report for unreachable rows.
 """
 
 import json

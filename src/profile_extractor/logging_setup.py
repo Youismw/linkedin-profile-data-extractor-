@@ -1,12 +1,20 @@
 """Logging configuration ensuring privacy and structured execution logs.
 
-Privacy Architecture:
-- Adheres strictly to the Privacy Rule: Candidate names, emails, phone numbers,
-  and profile text bodies are NEVER logged to console or disk.
-- At INFO level, only operational metrics (row numbers, slug handles, status codes,
-  and step timings) are output.
-- Full raw URLs and technical HTTP payloads appear only at DEBUG level.
-- Console logs stream to sys.stdout; persistent audit logs are stored in logs/extractor.log.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module establishes centralized, privacy-safe logging across all application components.
+It enforces privacy rules by ensuring sensitive candidate details are never leaked to logs,
+and configures unified log formatting for both terminal display and persistent audit files.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.cli`: Calls `setup_logging(level=config.log_level)` during startup.
+   - All modules (`orchestrator.py`, `playwright_fetcher.py`, `reader.py`, `writer.py`):
+     Call `get_logger()` to obtain the configured singleton logger instance.
+
+2. Downstream Dependencies:
+   - Python Standard Library (`logging`, `sys`, `pathlib`).
 """
 
 import logging

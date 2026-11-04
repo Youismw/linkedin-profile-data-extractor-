@@ -1,9 +1,20 @@
 """Data contracts and Pydantic models for LinkedIn Profile Extractor.
 
-This module acts as the single source of truth for all data structures across
-the application. By defining explicit Pydantic models, we guarantee strict type
-validation, automated JSON serialization, and immutable contracts between the
-input reader, DOM parser, storage writers, and external consumers.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module serves as the authoritative single source of truth for all data contracts,
+schemas, and enum classifications across the pipeline. It defines immutable contracts
+connecting the input reader, DOM parser, fetcher, and output writer.
+
+Module Communications:
+----------------------
+1. Utilized By:
+   - `profile_extractor.parser`: Instantiates `ProfileDocument`, `Profile`, `Meta`,
+     `ExperienceItem`, `EducationItem`, `CertificationItem`, `ProjectItem`, `LanguageItem`, `OtherSection`.
+   - `profile_extractor.fetcher.detection`: Returns `(Status, Reason | None)`.
+   - `profile_extractor.fetcher.playwright_fetcher`: Returns `FetchResult`.
+   - `profile_extractor.orchestrator`: Tracks `RunSummary`, `UnreachableRecord`, `Status`, `Reason`.
+   - `profile_extractor.writer`: Serializes `ProfileDocument` to JSON and `UnreachableRecord` to Excel.
 """
 
 from datetime import UTC, datetime

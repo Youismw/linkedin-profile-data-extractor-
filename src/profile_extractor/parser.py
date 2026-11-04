@@ -1,22 +1,30 @@
 """DOM parsing and structured profile extraction using BeautifulSoup.
 
-Architecture & Parsing Strategy:
-1. Two-Tier Extraction:
-   - Structured Core Fields: name, headline, location, about, experience, education, skills.
-   - Complete Raw Text Dump: Appends unedited full text under 'raw_text' in each document.
-   - Preservation of Unmapped Sections: Unmapped sections (Licenses, Patents, Activity)
-     land cleanly in 'other_sections' so zero data is lost.
-2. Resilience against LinkedIn SPA Updates:
-   - Does NOT rely on fragile minified CSS classes (e.g. '.artdeco-card--compact-7d8').
-   - Targets semantic elements (`h1`, `h2`, `<section>`), component attributes
-     (`data-component-type="LazyColumn"`), and ARIA listitems (`role="listitem"`).
-3. Text Hygiene & DOM Decontamination:
-   - Decomposes dialog modals, video player settings, footer language lists, and navigation chrome.
-   - Uses proper text separators to prevent word gluing across adjacent elements.
-   - Anchors location reliably on 'Contact info' / middle-dot separators.
-   - Correctly groups multi-role company containers (e.g. Google, Tata Technologies).
-4. Sub-page details extraction:
-   - Functions for parsing full skills, education, and experience details pages.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module is responsible for analyzing raw LinkedIn HTML, sanitizing noise elements,
+and extracting structured candidate fields into strongly-typed Pydantic profile models.
+It handles both primary profile layouts and specialized detail-page collections (skills,
+certifications, education, experience, languages, projects).
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.orchestrator`:
+     * Calls `parse_profile()` to parse top card, experience, education, skills, and metadata.
+     * Calls `parse_skills_details()`, `parse_experience_details()`, `parse_education_details()`,
+       `parse_certifications_details()`, `parse_projects_details()`, `parse_languages_details()`.
+   - Unit and fixture tests in `tests/test_parser.py`, `tests/test_live_fixtures.py`,
+     `tests/test_advanced_parser_defects.py`.
+
+2. Downstream Dependencies:
+   - `profile_extractor.parser_rules`:
+     * Imports date parsing rules (`DATE_RANGE_REGEX`), UI badge filters (`UI_BADGE_PATTERN`),
+       noise filters (`NOISE_LINE_PATTERNS`), and placeholder detection.
+   - `profile_extractor.models`:
+     * Constructs and returns `ProfileDocument`, `Profile`, `Meta`, `ExperienceItem`,
+       `EducationItem`, `CertificationItem`, `ProjectItem`, `LanguageItem`, `OtherSection`.
+   - `bs4 (BeautifulSoup)`: Performs high-speed DOM traversal, node filtering, and identity comparisons.
 """
 
 import re

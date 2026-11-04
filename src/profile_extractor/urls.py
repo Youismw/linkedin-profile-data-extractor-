@@ -1,11 +1,22 @@
 """URL normalization and slug extraction/sanitization for LinkedIn profiles.
 
-This module provides defensive parsing for messy real-world LinkedIn URLs:
-1. Normalizes varied schemes (http, https, missing schemes), country subdomains
-   (e.g., in.linkedin.com, uk.linkedin.com), query strings (?trk=...), and
-   anchors (#...) into a clean canonical format: https://www.linkedin.com/in/<slug>/
-2. Extracts and percent-decodes candidate slugs.
-3. Sanitizes slugs to ensure safe, cross-platform filesystem filenames.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module is the core utility for parsing, sanitizing, and validating LinkedIn URLs.
+It extracts candidate slugs, normalizes arbitrary link variations into canonical HTTPS format,
+and strips illegal characters to produce safe cross-platform filenames.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.reader`: Validates and normalizes candidate links in spreadsheets.
+   - `profile_extractor.orchestrator`: Extracts slugs and formats canonical LinkedIn URLs.
+   - `profile_extractor.writer`: Calls `sanitize_slug()` to format JSON output filenames.
+   - `profile_extractor.fetcher.playwright_fetcher`: Calls `extract_slug()` for logging.
+   - Unit tests in `tests/test_urls_and_reader.py`.
+
+2. Downstream Dependencies:
+   - Python Standard Library (`urllib.parse`, `hashlib`, `re`).
 """
 
 import hashlib

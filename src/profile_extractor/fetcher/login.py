@@ -1,14 +1,26 @@
 """Interactive login helper for consenting employee to save authenticated session.
 
-Security & Architecture Principles:
-- Anti-CWE-256: Passwords and credentials are NEVER handled, accepted, or stored
-  by the application or its config files.
-- Manual 2FA Handling: Because modern LinkedIn accounts require multi-factor
-  authentication (SMS, authenticator app, or email codes), headless automated login
-  invariably fails. A quick one-time manual sign-in captures genuine 2FA session
-  tokens into `.auth/state.json` (gitignored).
-- Proactive Cookie Health: `is_session_expired` checks the expiration timestamp
-  of LinkedIn's `li_at` authentication cookie before making network requests.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module manages human-in-the-loop authentication for LinkedIn. It launches
+a visible browser window for the employee to sign in, complete any 2FA or CAPTCHA,
+and saves the authenticated storage state (`.auth/state.json`) for subsequent headless runs.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.cli`:
+     * Calls `is_session_expired(auth_state_path)` during pre-flight health checks.
+     * Calls `run_interactive_login(auth_state_path)` when the user runs `.\run login`
+       or when an active session has expired.
+   - `profile_extractor.fetcher.playwright_fetcher`:
+     * Calls `run_interactive_login()` as an in-flight recovery mechanism if an authwall
+       is encountered mid-scrape.
+   - Unit tests in `tests/test_playwright_fetcher.py`.
+
+2. Downstream Dependencies:
+   - Playwright: Launches Chromium in headed mode (`headless=False`) with human-like viewport.
+   - Filesystem: Saves cookie and localStorage JSON snapshot to `.auth/state.json`.
 """
 
 import json

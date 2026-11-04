@@ -1,11 +1,25 @@
 """Fetcher package: protocols, implementations, detection, and login helper.
 
-Design:
-- `Fetcher` (Protocol): Enforces structural subtyping so any fetcher (Playwright,
-  HTTP requests, official LinkedIn API, or test stub) can be plugged in without
-  modifying orchestrator logic.
-- `FakeFetcher`: In-memory test fixture used for offline smoke tests, unit tests,
-  and CI pipelines without internet connectivity or browser installation.
+Module Architecture & Inter-Module Communication:
+==================================================
+This subpackage defines the fetching abstraction layer for retrieving HTML content
+from LinkedIn. It decouples the pipeline orchestration from the specific browser
+automation technology through structural typing (`Fetcher` protocol).
+
+Package Communications:
+-----------------------
+1. Consumed By:
+   - `profile_extractor.cli`: Instantiates `PlaywrightFetcher` or `FakeFetcher`.
+   - `profile_extractor.orchestrator`: Uses the `Fetcher` interface to fetch profiles
+     and close browser sessions.
+   - Unit test suites: `tests/test_walking_skeleton.py`, `tests/test_contracts.py`.
+
+2. Contained Implementations:
+   - `Fetcher`: Structural protocol defining `fetch(url)` and `close()`.
+   - `PlaywrightFetcher`: Production Chromium fetcher with session management and scrolling.
+   - `FakeFetcher`: Configurable mock fetcher for isolated, zero-network unit tests.
+   - `detection`: Outcome classification (Status and Reason heuristics).
+   - `login`: Interactive manual login helper and cookie health checker.
 """
 
 from collections.abc import Mapping

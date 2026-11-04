@@ -1,11 +1,21 @@
 """Configuration management and validation for LinkedIn Profile Extractor.
 
-Features:
-- Backed by standard TOML (`tomllib` in Python standard library).
-- Strongly typed schema validation via Pydantic v2.
-- Sensible defaults that work out of the box with zero setup.
-- Layered precedence: CLI arguments > config.toml > built-in defaults.
-- Defensive validators enforcing bounds (e.g. min_delay <= max_delay).
+Module Architecture & Inter-Module Communication:
+==================================================
+This module provides strongly-typed configuration loading and validation using
+Pydantic v2 and Python's built-in `tomllib`. It merges layered configuration sources
+(CLI flags > config.toml > sensible defaults) and enforces boundary validation.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.cli`: Calls `read_config_file()` and `load_config(overrides=...)`.
+   - `profile_extractor.orchestrator`: Receives validated `ExtractorConfig` to direct run parameters.
+   - Unit tests in `tests/test_contracts.py`.
+
+2. Downstream Dependencies:
+   - Python Standard Library (`tomllib`, `pathlib`).
+   - Pydantic v2 (`BaseModel`, `Field`, `field_validator`, `model_validator`).
 """
 
 import tomllib

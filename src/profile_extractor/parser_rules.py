@@ -1,15 +1,25 @@
 """Centralized selectors, heading signatures, and DOM matching rules for parsing.
 
-Design Philosophy:
-- Zero Obfuscated CSS Classes: LinkedIn frequently regenerates hashed CSS
-  classnames (e.g., `artdeco-button--tertiary-7x9z`). Relying on them creates
-  fragile parsers that break weekly.
-- Semantic HTML & ARIA Attributes: This module targets stable structural tokens:
-  HTML tags (`h1`, `h2`, `section`), ARIA landmarks (`role="listitem"`),
-  component keys (`LazyColumn`), and human-visible section headings.
-- Single-File Maintenance: If LinkedIn introduces a new heading variation (e.g.
-  'Career History' instead of 'Experience'), updating the regex list here adapts
-  the entire pipeline without modifying parsing logic.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module isolates all regex patterns, noise filters, section classification heuristics,
+placeholder definitions, and date parsing rules from the DOM traversal code. It serves
+as the declarative knowledge base for parsing LinkedIn profile pages.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.parser`:
+     * Consumes heading patterns (`ABOUT_PATTERNS`, `EXPERIENCE_PATTERNS`, etc.) to map sections.
+     * Consumes `DATE_RANGE_REGEX` and `SINGLE_DATE_REGEX` to extract employment/education periods.
+     * Consumes `UI_BADGE_PATTERN` and `NOISE_LINE_PATTERNS` to decontaminate text.
+     * Consumes `is_valid_extracted_name()` and `is_valid_location()` for field validation.
+   - `profile_extractor.orchestrator`:
+     * Consumes `_is_placeholder_value()` to assess missingness in metadata blocks.
+   - Unit tests in `tests/test_parser.py`, `tests/test_advanced_parser_defects.py`.
+
+2. Downstream Dependencies:
+   - Python Standard Library (`re`, `typing`).
 """
 
 import re

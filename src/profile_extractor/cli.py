@@ -1,11 +1,34 @@
 """Command Line Interface for LinkedIn Profile Extractor.
 
-Features:
-- Single-command execution: `.\\run` or `.\\extract` (defaults to 'run').
-- Shorthand positional syntax: `.\\run [input_file_or_dir] [output_dir]`.
-- Persistent path memory: Remembers custom input and output paths in `.run_state.json`.
-- Automatic session check: Gauges if LinkedIn cookie is expired and prompts login.
-- Single Windows Explorer popup directly into `profiles/` upon completion.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module serves as the primary user-facing entry point and controller for the
+entire application. It parses command-line arguments, manages persistent path
+state, verifies session authentication, instantiates fetchers, coordinates the
+pipeline execution, and provides user feedback (including Windows Explorer launch).
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - Command-line users via Windows Batch scripts: `.\\run` (run.bat) or `.\\extract` (extract.bat).
+   - Direct execution via Python module launcher: `python -m profile_extractor`.
+   - Automated testing harnesses in `tests/test_cli.py`, `tests/test_walking_skeleton.py`.
+
+2. Downstream Callees & Collaborators:
+   - `profile_extractor.config`:
+     * Calls `read_config_file()` to parse base configurations from `config.toml`.
+     * Calls `load_config()` to merge command-line overrides with configuration defaults.
+   - `profile_extractor.fetcher`:
+     * Calls `is_session_expired()` to check authentication cookie validity before starting.
+     * Calls `run_interactive_login()` to launch a browser when manual login is required.
+     * Instantiates `PlaywrightFetcher` for authenticated browser automation or `FakeFetcher` for tests.
+   - `profile_extractor.logging_setup`:
+     * Calls `setup_logging()` to configure console and file loggers according to user verbosity.
+   - `profile_extractor.orchestrator`:
+     * Calls `run_pipeline(config, fetcher)` to execute the full extraction workflow.
+   - Operating System / Subprocess:
+     * Reads/writes `.run_state.json` to remember previously selected input and output directories.
+     * Uses `os.startfile()` and `subprocess.Popen("explorer ...")` to auto-open output folders on Windows.
 """
 
 import argparse
@@ -16,7 +39,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+# Configuration loaders: read TOML files and merge command-line flags
 from profile_extractor.config import load_config, read_config_file
+
+# Fetcher implementations and session authentication utilities
 from profile_extractor.fetcher import (
     FakeFetcher,
     Fetcher,
@@ -24,67 +50,122 @@ from profile_extractor.fetcher import (
     is_session_expired,
     run_interactive_login,
 )
+
+# Centralized logging setup
 from profile_extractor.logging_setup import setup_logging
+
+# Core pipeline execution engine
 from profile_extractor.orchestrator import run_pipeline
 
-# Local file storing remembered input/output paths across CLI runs
+# ------------------------------------------------------------------------------
+# Persistent State Management
+# ------------------------------------------------------------------------------
+# Local JSON file storing remembered input spreadsheet and output directory paths
+# across consecutive CLI runs, eliminating repetitive path typing for users.
 STATE_FILE = Path(".run_state.json")
 
 
 def _load_run_state() -> dict[str, str]:
-    """Load previously saved input and output locations from .run_state.json."""
+    """Load previously saved input and output locations from `.run_state.json`.
+
+    Returns:
+        Dictionary mapping state keys (e.g., 'last_input', 'last_output') to path strings,
+        or an empty dictionary if the state file does not exist or contains invalid JSON.
+    """
+    # Check if the persistent state file exists on the local disk
     if STATE_FILE.is_file():
         try:
+            # Read and parse the JSON state dictionary safely using UTF-8 encoding
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                # Ensure all keys and values are clean strings
                 return {str(k): str(v) for k, v in data.items()}
         except Exception:
+            # If the state file is corrupted or unreadable, safely degrade to an empty state
             return {}
     return {}
 
 
 def _save_run_state(state: dict[str, str]) -> None:
-    """Save last used input and output locations for subsequent runs."""
+    """Save last used input and output locations for subsequent runs.
+
+    Args:
+        state: Dictionary containing path mappings to persist.
+    """
     try:
+        # Serialize the state dictionary with 2-space indentation for human inspectability
         STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except Exception:
+        # File write failures (e.g. read-only filesystem) must not crash the extraction pipeline
         pass
 
 
 def _clean_output_path(path_str: str) -> str:
-    """Strip redundant prefixes like 'output\\', 'output/', 'output:' if present."""
+    """Strip redundant prefixes like 'output\\', 'output/', 'output:' if present.
+
+    Handles shorthand patterns where users type 'output\\my_folder' or 'out\\my_folder'
+    to indicate that the path is an output destination.
+
+    Args:
+        path_str: Raw path string passed by the user.
+
+    Returns:
+        Normalized path string with prefix stripped.
+    """
+    # Strip surrounding whitespace for consistent parsing
     raw = path_str.strip()
     raw_lower = raw.lower()
+
+    # Iterate over common user prefix shorthands to strip
     for prefix in ("output\\", "output/", "output:", "out\\", "out/"):
         if raw_lower.startswith(prefix):
+            # Remove the detected prefix and return the stripped remaining path
             return raw[len(prefix) :].strip()
+
     return raw
 
 
 def _detect_output_intent(
     input_pos: str | None, output_pos: str | None
 ) -> tuple[str | None, str | None]:
-    """Detect if user passed an output path (e.g. 'output\\...', '\\output', or 'output <path>')."""
-    # 1. If input_pos is literally "output" or "out" (e.g. .\run output "C:\Users\...\nnn")
+    """Detect if user passed an output path using flexible CLI shorthand syntax.
+
+    Supports multiple user mental models:
+    - `.\\run output "C:\\my_output"` -> recognized as setting output, not input.
+    - `.\\run "output\\my_dir"` -> recognized as output directory.
+    - `.\\run "C:\\path\\output"` -> recognized as output directory when ending in \\output.
+    - `.\\run "profiles.xlsx" "out_dir"` -> standard positional input and output.
+
+    Args:
+        input_pos: First positional argument, if provided.
+        output_pos: Second positional argument, if provided.
+
+    Returns:
+        Tuple of (resolved_input_pos, resolved_output_pos).
+    """
+    # Case 1: If first argument is literally the keyword 'output' or 'out'
+    # Example: .\run output "C:\Users\...\my_folder"
     if input_pos and input_pos.strip().lower() in ("output", "out"):
+        # The second argument is the actual output directory; input remains unspecified
         cleaned_out = _clean_output_path(output_pos) if output_pos else None
         return None, cleaned_out
 
-    # 2. Clean output_pos if it was explicitly provided with an 'output\' prefix
+    # Case 2: Clean output_pos if explicitly passed with an 'output\' prefix
     if output_pos:
         output_pos = _clean_output_path(output_pos)
 
-    # 3. If only one positional argument was provided, inspect if it signifies an output location
+    # Case 3: If only one positional argument was provided, inspect if it indicates an output destination
     if input_pos and not output_pos:
         raw = input_pos.strip()
         raw_lower = raw.lower()
 
-        # Check for prefix: "output\", "output/", "output:", "out\", "out/"
+        # Check for directory prefixes: "output\", "output/", "output:", "out\", "out/"
         for prefix in ("output\\", "output/", "output:", "out\\", "out/"):
             if raw_lower.startswith(prefix):
+                # The single argument is an output folder; input is resolved from state or config
                 return None, raw[len(prefix) :].strip()
 
-        # Check for suffix: "\output", "/output" (ignoring files like output.xlsx)
+        # Check for directory suffixes: "\output" or "/output" (ignoring spreadsheets named output.xlsx)
         if not raw_lower.endswith(".xlsx"):
             cleaned_slash = raw.rstrip("\\/")
             if (
@@ -93,21 +174,34 @@ def _detect_output_intent(
             ):
                 return None, raw
 
+    # Default: Return arguments in their standard positional order
     return input_pos, output_pos
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct and return the argument parser for profile_extractor."""
+    """Construct and configure the argument parser for the profile_extractor CLI.
+
+    Configures subcommands:
+    - 'run': Executes profile extraction pipeline (default subcommand).
+    - 'login': Launches manual interactive browser session helper.
+    - 'logout': Clears saved session authentication and/or remembered paths.
+
+    Returns:
+        Configured ArgumentParser instance.
+    """
     parser = argparse.ArgumentParser(
         prog="profile_extractor",
         description="Extract profile data from LinkedIn profile URLs listed in an Excel file.",
     )
+    # Define subcommands container
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
     # --------------------------------------------------------------------------
-    # 'run' subcommand
+    # Subcommand: 'run' (Core extraction pipeline)
     # --------------------------------------------------------------------------
     run_parser = subparsers.add_parser("run", help="Run the profile extraction pipeline")
+
+    # Positional shorthand arguments: allows typing `.\run profiles.xlsx output_dir`
     run_parser.add_argument(
         "input_pos",
         nargs="?",
@@ -120,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output directory anywhere on machine (positional shorthand for -o)",
     )
+
+    # Explicit flag arguments
     run_parser.add_argument(
         "--input",
         "-i",
@@ -180,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # --------------------------------------------------------------------------
-    # 'login' subcommand (stand-alone session creator)
+    # Subcommand: 'login' (Interactive session creation)
     # --------------------------------------------------------------------------
     login_parser = subparsers.add_parser(
         "login",
@@ -193,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # --------------------------------------------------------------------------
-    # 'logout' subcommand (manually clean / reset saved session and remembered paths)
+    # Subcommand: 'logout' (Session & path reset)
     # --------------------------------------------------------------------------
     logout_parser = subparsers.add_parser(
         "logout",
@@ -229,11 +325,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point for the profile_extractor CLI."""
+    """Primary entry point for the profile_extractor CLI execution.
+
+    Coordinates command line argument parsing, subcommand routing, path resolution,
+    session health checks, pipeline invocation, and output folder presentation.
+
+    Args:
+        argv: Command-line arguments list (defaults to sys.argv[1:]).
+
+    Returns:
+        Integer exit code (0 for success, non-zero for error).
+    """
+    # Default to sys.argv if no explicit arguments sequence was passed
     if argv is None:
         argv = sys.argv[1:]
 
-    # Default to 'run' subcommand if user typed flags/arguments without a subcommand
+    # Known subcommand identifiers: if the user typed positional arguments or flags
+    # directly (e.g. `.\run profiles.xlsx`), automatically default subcommand to 'run'
     known_commands = [
         "run",
         "login",
@@ -247,20 +355,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not argv or (argv[0] not in known_commands):
         argv = ["run", *argv]
 
+    # Parse command line arguments
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # If no valid subcommand is resolved, display help information
     if not args.command:
         parser.print_help()
         return 0
 
-    # --------------------------------------------------------------------------
+    # ==========================================================================
     # Handler: logout / clean-session / reset-session / reset
-    # --------------------------------------------------------------------------
+    # ==========================================================================
     if args.command in ("logout", "clean-session", "reset-session", "reset"):
+        # Resolve target authentication path (defaults to .auth/state.json)
         target_auth = Path(args.auth_path or ".auth/state.json")
         target = (getattr(args, "target", None) or "all").lower()
+
+        # Determine whether to clear session cookies
         clear_session = target in ("all", "session") and not getattr(args, "paths_only", False)
+
+        # Determine whether to clear remembered path state (.run_state.json)
         clear_paths = (
             getattr(args, "all_flag", False)
             or getattr(args, "all", False)
@@ -268,6 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             or not getattr(args, "session_only", False)
         )
 
+        # 1. Delete session state file if requested
         if clear_session:
             if target_auth.is_file():
                 target_auth.unlink()
@@ -275,6 +391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(f"No active session found at: {target_auth}")
 
+        # 2. Delete remembered path history file if requested
         if clear_paths:
             if STATE_FILE.is_file():
                 STATE_FILE.unlink()
@@ -287,35 +404,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Future runs will prompt for login and require specifying an input spreadsheet.")
         return 0
 
-    # --------------------------------------------------------------------------
-    # Handler: login
-    # --------------------------------------------------------------------------
+    # ==========================================================================
+    # Handler: login (Interactive Session Setup)
+    # ==========================================================================
     if args.command == "login":
         login_auth = Path(args.auth_path or ".auth/state.json")
         try:
+            # Launch interactive browser window for manual 2FA/login
             run_interactive_login(login_auth)
             return 0
         except Exception as e:
             print(f"Login failed: {e}", file=sys.stderr)
             return 1
 
-    # --------------------------------------------------------------------------
-    # Handler: run
-    # --------------------------------------------------------------------------
+    # ==========================================================================
+    # Handler: run (Extraction Pipeline Execution)
+    # ==========================================================================
     if args.command == "run":
         overrides: dict[str, object] = {}
+
+        # Detect and clean flexible input and output positional intents
         input_pos, output_pos = _detect_output_intent(args.input_pos, args.output_pos)
         input_choice = args.input_file or input_pos
         output_choice = args.output_dir or output_pos
 
+        # Load persisted path state and base config file
         run_state = _load_run_state()
         config_data = read_config_file(args.config_file)
 
+        # ----------------------------------------------------------------------
         # 1. Resolve Input Spreadsheet Path
         # Precedence: Explicit CLI arg > Remembered run state > config.toml
+        # ----------------------------------------------------------------------
         input_path: Path | None = None
         if input_choice:
             candidate = Path(input_choice)
+            # If candidate is a directory, automatically select the newest spreadsheet file
             if candidate.is_dir():
                 cand_files = sorted(
                     [
@@ -336,8 +460,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     return 1
             elif candidate.is_file():
+                # Direct file path exists
                 input_path = candidate
             else:
+                # Desktop fallback: check if user provided only a filename that exists on Desktop
                 desktop_fallback = Path.home() / "Desktop" / candidate.name
                 if desktop_fallback.is_file():
                     input_path = desktop_fallback
@@ -347,15 +473,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 1
+            # Persist the newly specified input path
             run_state["last_input"] = str(input_path.resolve())
         elif run_state.get("last_input"):
+            # Check previously remembered input path
             remembered = Path(run_state["last_input"])
             if remembered.is_file():
                 input_path = remembered
             else:
+                # Remove stale entry if file was deleted or moved
                 run_state.pop("last_input", None)
                 _save_run_state(run_state)
         elif config_data.get("input_file"):
+            # Fall back to path configured in config.toml
             cfg_in = Path(str(config_data["input_file"]))
             if cfg_in.is_file():
                 input_path = cfg_in
@@ -382,11 +512,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         overrides["input_file"] = input_path
 
+        # ----------------------------------------------------------------------
         # 2. Resolve Output Directory Path
         # Precedence: Explicit CLI arg > Remembered run state > config.toml > 'output'
+        # ----------------------------------------------------------------------
         out_dir_path: Path
         if output_choice:
             candidate_out = Path(output_choice)
+            # Guard against specifying an existing file path as the output directory
             if candidate_out.is_file():
                 print(
                     f"\n[ERROR] Output directory is a file, not a directory: {candidate_out}\n",
@@ -396,6 +529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             out_dir_path = candidate_out
             run_state["last_output"] = str(out_dir_path.resolve())
         elif run_state.get("last_output"):
+            # Check previously remembered output path
             rem_out = Path(run_state["last_output"])
             if rem_out.is_file():
                 run_state.pop("last_output", None)
@@ -403,12 +537,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 out_dir_path = rem_out
         elif config_data.get("output_dir"):
+            # Fall back to path configured in config.toml
             out_dir_path = Path(str(config_data["output_dir"]))
         else:
             # Default to standard project output/ directory
             out_dir_path = Path("output")
 
-        # Validate output directory can be created
+        # Validate that output directory can be created or written to
         try:
             out_dir_path.mkdir(parents=True, exist_ok=True)
             overrides["output_dir"] = out_dir_path
@@ -424,7 +559,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Persist resolved paths for future runs
         _save_run_state(run_state)
 
+        # ----------------------------------------------------------------------
         # 3. Apply Optional Operational Flags
+        # ----------------------------------------------------------------------
         if args.max_profiles is not None:
             overrides["max_profiles"] = args.max_profiles
         if args.fast:
@@ -437,17 +574,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if getattr(args, "prune_stale", False):
             overrides["prune_stale"] = True
 
+        # Load complete runtime configuration with all overrides merged
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)
         print(f"Reading candidate spreadsheet: {config.input_file}")
         print(f"Output directory: {config.output_dir}")
 
+        # ----------------------------------------------------------------------
         # 4. Instantiate Fetcher with Session Health Check
+        # ----------------------------------------------------------------------
         fetcher: Fetcher
         if args.fake:
+            # FakeFetcher returns mock HTML fixtures without network access
             fetcher = FakeFetcher()
         else:
-            # Proactive session check: opens login window if cookies expired
+            # Proactive session check: opens login window if cookies are missing or expired
             if is_session_expired(config.auth_state_path):
                 print("\n" + "=" * 70)
                 print("[!] LinkedIn session not found or has expired.")
@@ -459,14 +600,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"Error during interactive login: {e}", file=sys.stderr)
                     return 1
 
+            # PlaywrightFetcher automates headless Chromium with the authenticated session
             fetcher = PlaywrightFetcher(
                 auth_state_path=config.auth_state_path,
                 headless=config.headless,
                 timeout_seconds=config.page_timeout_seconds,
             )
 
-        # 5. Execute Pipeline and Pop Output Folder
+        # ----------------------------------------------------------------------
+        # 5. Execute Pipeline and Pop Output Folder in Windows Explorer
+        # ----------------------------------------------------------------------
         try:
+            # Run the extraction workflow across all rows
             summary = run_pipeline(config, fetcher)
             print(
                 f"Execution finished: {summary.ok_count} OK, "
@@ -475,7 +620,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"Output saved to {summary.output_dir}"
             )
 
-            # Automatically pop open a single Windows File Explorer window into profiles/
+            # Automatically pop open a single Windows File Explorer window directly into profiles/
             try:
                 profiles_dir = config.output_dir / "profiles"
                 abs_output = (
@@ -485,17 +630,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Opening output folder: {abs_output}")
                 if sys.platform == "win32":
                     opened = False
+                    # Primary mechanism: os.startfile() invokes native Windows shell association
                     try:
                         os.startfile(str(abs_output))
                         opened = True
                     except Exception:
                         pass
+                    # Secondary fallback: launch explorer.exe directly via subprocess
                     if not opened:
                         try:
                             subprocess.Popen(f'explorer "{abs_output}"', shell=True)
                         except Exception:
                             pass
             except Exception:
+                # Explorer popup errors must never prevent returning success code
                 pass
 
             return 0
@@ -507,4 +655,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Script entry point when executed directly
     sys.exit(main())

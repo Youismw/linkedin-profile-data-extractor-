@@ -324,8 +324,10 @@ def test_card_composer_preserves_final_document_and_adds_missing_virtualized_car
     composed = _compose_captured_profile_html([captured_about], fallback_html)
     soup = BeautifulSoup(composed, "lxml")
 
-    assert soup.select_one("#top-card").get_text(" ", strip=True) == "Profile header"
-    assert soup.select_one("#experience").get_text(" ", strip=True) == (
+    top_card = soup.select_one("#top-card")
+    exp_card = soup.select_one("#experience")
+    assert top_card is not None and top_card.get_text(" ", strip=True) == "Profile header"
+    assert exp_card is not None and exp_card.get_text(" ", strip=True) == (
         "Visible final-page experience"
     )
     assert "About text retained from an earlier scroll snapshot." in soup.get_text(" ", strip=True)
@@ -349,10 +351,12 @@ def test_card_composer_replaces_existing_card_only_with_richer_snapshot() -> Non
     composed = _compose_captured_profile_html([richer_about], fallback_html)
     soup = BeautifulSoup(composed, "lxml")
 
-    assert soup.select_one("#about-card").get_text(" ", strip=True).endswith(
+    about_el = soup.select_one("#about-card")
+    other_el = soup.select_one("#other-card")
+    assert about_el is not None and about_el.get_text(" ", strip=True).endswith(
         "Short excerpt plus the complete text retained from the expanded card."
     )
-    assert soup.select_one("#other-card").get_text(" ", strip=True) == (
+    assert other_el is not None and other_el.get_text(" ", strip=True) == (
         "Keep this unrelated section"
     )
     assert len(soup.select('[id="about-card"]')) == 1

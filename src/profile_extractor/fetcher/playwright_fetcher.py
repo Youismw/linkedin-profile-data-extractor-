@@ -1,14 +1,31 @@
 """Playwright-based fetcher utilizing stored session state and incremental scrolling.
 
-Technical Highlights:
-1. Reusable Browser Lifecycle: Launches Chromium once per pipeline run and
-   shares the authenticated context across profiles for high throughput.
-2. Container-Targeted Lazy Scrolling: LinkedIn's SPA layout nests the scrollable
-   viewport inside `<main id="workspace">` rather than `window`. This fetcher
-   progressively scrolls both `main` and `window`, triggering intersection
-   observers and GraphQL queries for deep sections (Experience, Education, Skills).
-3. In-Flight Authwall Recovery: If a session expires mid-run, automatically
-   prompts the user, opens a login window, captures fresh cookies, and retries.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module is responsible for authenticated headless Chromium browser lifecycle
+management, page navigation, lazy-container progressive viewport scrolling, in-flight
+DOM card snapshotting, in-flight authwall recovery, and deterministic resource teardown.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.cli`: Instantiates `PlaywrightFetcher(auth_state_path, headless, timeout_seconds)`.
+   - `profile_extractor.orchestrator`:
+     * Calls `fetcher.fetch(url)` for candidate profiles and deep detail subpages.
+     * Calls `fetcher.close()` to cleanly shut down Chromium contexts and browser processes.
+   - Unit tests in `tests/test_playwright_fetcher.py`.
+
+2. Downstream Modules Called:
+   - `profile_extractor.fetcher.detection`:
+     * Calls `detect_outcome(status_code, final_url, html)` to classify page responses
+       into Status (OK, UNREACHABLE) and Reason (BLOCKED, NOT_FOUND, NOT_VISIBLE, OK).
+   - `profile_extractor.fetcher.login`:
+     * Calls `run_interactive_login(auth_state_path)` for automatic in-flight re-login
+       if an active session cookie expires mid-run.
+   - `profile_extractor.urls`:
+     * Calls `extract_slug()` and `sanitize_slug()` for logging context.
+   - `profile_extractor.models`:
+     * Returns `FetchResult(url, status, reason, html, status_code, elapsed_seconds)`.
 """
 
 import sys
@@ -16,15 +33,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-
 from playwright.sync_api import (
     Browser,
     BrowserContext,
     Playwright,
-    sync_playwright,
-)
-from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
 )
 
 from profile_extractor.fetcher.detection import detect_outcome
@@ -142,7 +156,7 @@ def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
             card_id = captured.get("id")
             component_key = captured.get("componentkey")
             if isinstance(component_key, str) and component_key:
-                existing = soup.find(attrs={"componentkey": component_key})
+                existing = soup.find(None, attrs={"componentkey": component_key})
                 # Keep detail-page entity items inside LazyColumn so the existing
                 # skills parser discovers them through its normal selection path.
                 destination = soup.select_one('[data-component-type="LazyColumn"]') or main
@@ -159,10 +173,10 @@ def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
                     # was virtualized away but a later card remains in the final DOM.
                     for later_markup in valid_cards[card_index + 1 :]:
                         later_fragment = BeautifulSoup(later_markup, "lxml")
-                        later_node = later_fragment.find(attrs={"componentkey": True})
+                        later_node = later_fragment.find(None, attrs={"componentkey": True})
                         later_key = later_node.get("componentkey") if later_node else None
                         if isinstance(later_key, str) and later_key:
-                            later_existing = soup.find(attrs={"componentkey": later_key})
+                            later_existing = soup.find(None, attrs={"componentkey": later_key})
                             if later_existing is not None:
                                 later_existing.insert_before(captured)
                                 inserted = True
@@ -197,7 +211,7 @@ class PlaywrightFetcher:
         headless: bool = True,
         timeout_seconds: float = 30.0,
         save_raw_html_dir: Path | str | None = None,
-        max_scroll_steps: int = 35,
+        max_scroll_steps: int = 70,
         scroll_step_delay_ms: int = 350,
         interactive_relogin: bool = True,
     ) -> None:
@@ -296,11 +310,11 @@ class PlaywrightFetcher:
                                 return terminalPage || (card && cardText.length > 40)
                                     || (heading && mainText.length > 40);
                             }""",
-                            timeout=min(self.timeout_ms, 6000),
+                            timeout=min(self.timeout_ms, 15000),
                         )
                     except PlaywrightTimeoutError:
                         logger.warning(
-                            "Profile shell did not reach the expected ready state within 6s; "
+                            "Profile shell did not reach the expected ready state within 15s; "
                             "continuing with incremental capture."
                         )
 

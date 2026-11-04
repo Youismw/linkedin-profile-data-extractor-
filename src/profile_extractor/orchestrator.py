@@ -1,17 +1,35 @@
 """Pipeline orchestrator for LinkedIn profile extraction.
 
-This module coordinates the entire workflow:
-1. Input Ingestion: Invokes reader.py to parse the Excel spreadsheet.
-2. Error Isolation: Wraps each candidate visit in a try/except block so a failure
-   on one candidate never crashes the pipeline for remaining candidates.
-3. Polite Pacing: Injects random jitter delays between profile visits to mimic
-   human browsing and protect employee accounts from rate limits.
-4. Circuit Breaker: Halts immediately if bot challenge/CAPTCHA is detected
-   (when stop_on_block=True), marking remaining rows as 'not_processed'.
-5. Clean Output: Purges stale JSON files from prior runs so only fresh data exists.
-6. Audit Generation: Writes individual JSON files, unreachable_profiles.xlsx,
-   and mathematical run_summary.json.
-7. Safe Teardown: Always releases browser resources via `fetcher.close()` in a `finally` block.
+Module Architecture & Inter-Module Communication:
+==================================================
+This module serves as the central conductor for the entire extraction pipeline.
+It coordinates candidate spreadsheet ingestion, polite request pacing, headless
+browser navigation, two-pass deep detail discovery, HTML parsing, failure auditing,
+atomic file serialization, and statistical reconciliation.
+
+Module Communications:
+----------------------
+1. Upstream Callers:
+   - `profile_extractor.cli`: Calls `run_pipeline(config, fetcher)` to launch the job.
+   - Test suites: `tests/test_walking_skeleton.py`, `tests/test_integration_hardening.py`,
+     `tests/test_additive_detail_crawl.py`.
+
+2. Downstream Modules Called:
+   - `profile_extractor.reader`:
+     * Calls `read_profile_urls(config.input_file)` to parse candidate spreadsheet links.
+   - `profile_extractor.fetcher` (`PlaywrightFetcher` or `FakeFetcher`):
+     * Calls `fetcher.fetch(url)` to retrieve profile and sub-page HTML over authenticated Chromium.
+     * Calls `fetcher.close()` in a `finally` block for deterministic browser teardown.
+   - `profile_extractor.parser`:
+     * Calls `parse_profile()` to parse top card, experience, education, skills, about, and metadata.
+     * Calls `parse_skills_details()`, `parse_experience_details()`, `parse_education_details()`,
+       `parse_certifications_details()`, `parse_projects_details()`, `parse_languages_details()`.
+   - `profile_extractor.writer`:
+     * Calls `write_profile_json()` to store individual candidate JSON documents in `output/profiles/`.
+     * Calls `write_unreachable_report()` to generate audit spreadsheets (`unreachable_profiles.xlsx`).
+     * Calls `write_run_summary()` to write reconciliation totals (`run_summary.json`).
+   - `profile_extractor.models`:
+     * Constructs `RunSummary`, `UnreachableRecord`, `Status`, `Reason`, `OtherSection`.
 """
 
 import hashlib
