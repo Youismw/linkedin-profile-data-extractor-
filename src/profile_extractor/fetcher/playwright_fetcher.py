@@ -32,7 +32,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from playwright.sync_api import (
     Browser,
     BrowserContext,
@@ -200,6 +200,48 @@ def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
     except Exception:
         # A malformed fragment must not make the primary page capture unusable.
         return fallback_html
+
+
+def _about_section_node(soup: BeautifulSoup) -> Tag | None:
+    """Return the <section> the parser treats as About (same test as parse_profile)."""
+    from profile_extractor.parser import _extract_section_heading, _matches_any_pattern
+    from profile_extractor.parser_rules import ABOUT_PATTERNS
+
+    for sec in soup.find_all("section"):
+        if not isinstance(sec, Tag):
+            continue
+        heading = _extract_section_heading(sec)
+        if _matches_any_pattern(heading, ABOUT_PATTERNS) or str(sec.get("id") or "").lower() == "about":
+            return sec
+    return None
+
+
+def _ensure_about_section(composed_html: str, final_html: str) -> str:
+    """Additive safety net for the About section.
+
+    Acts only when the composed document has no About section but the final page
+    does. It then appends a copy of the final page's About section to the composed
+    <main>. It never removes or edits existing content, so fields already captured
+    are unaffected.
+    """
+    try:
+        composed = BeautifulSoup(composed_html, "lxml")
+        if _about_section_node(composed) is not None:
+            return composed_html
+        about_node = _about_section_node(BeautifulSoup(final_html, "lxml"))
+        if about_node is None:
+            return composed_html
+        main = composed.find("main")
+        if main is None:
+            return composed_html
+        fragment = BeautifulSoup(str(about_node), "lxml")
+        node = fragment.body.find(True, recursive=False) if fragment.body else None
+        if node is None:
+            return composed_html
+        main.append(node)
+        return str(composed)
+    except Exception:
+        return composed_html
 
 
 class PlaywrightFetcher:
@@ -465,6 +507,7 @@ class PlaywrightFetcher:
 
                 captured_cards = page.evaluate(_GET_CAPTURED_PROFILE_CARDS_JS)
                 html = _compose_captured_profile_html(captured_cards, final_html)
+                html = _ensure_about_section(html, final_html)
 
                 # --------------------------------------------------------------
                 # In-Flight Authwall Recovery:

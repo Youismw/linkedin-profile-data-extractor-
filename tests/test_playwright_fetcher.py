@@ -6,7 +6,10 @@ import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from profile_extractor.fetcher.login import is_session_expired
-from profile_extractor.fetcher.playwright_fetcher import PlaywrightFetcher
+from profile_extractor.fetcher.playwright_fetcher import (
+    PlaywrightFetcher,
+    _ensure_about_section,
+)
 from profile_extractor.models import Reason, Status
 
 
@@ -115,6 +118,46 @@ class TestPlaywrightFetcher:
             encoding="utf-8",
         )
         assert is_session_expired(valid_file) is False
+
+    def test_ensure_about_section_adds_about_when_missing(self) -> None:
+        """Additive safety net: appends About section from final page if missing in composed."""
+        composed = (
+            "<html><body><main><section id='experience'>"
+            "<h2>Experience</h2></section></main></body></html>"
+        )
+        final = (
+            "<html><body><main><section id='about'>"
+            "<h2>About</h2><p>Experienced engineer</p></section></main></body></html>"
+        )
+        result = _ensure_about_section(composed, final)
+        assert "Experienced engineer" in result
+        assert "Experience" in result
+
+    def test_ensure_about_section_noop_when_about_already_present(self) -> None:
+        """Additive safety net: does nothing if composed HTML already contains About section."""
+        composed = (
+            "<html><body><main><section id='about'>"
+            "<h2>About</h2><p>Original</p></section></main></body></html>"
+        )
+        final = (
+            "<html><body><main><section id='about'>"
+            "<h2>About</h2><p>Replacement</p></section></main></body></html>"
+        )
+        result = _ensure_about_section(composed, final)
+        assert result == composed
+
+    def test_ensure_about_section_noop_when_neither_has_about(self) -> None:
+        """Additive safety net: gracefully returns composed HTML when no About section exists."""
+        composed = (
+            "<html><body><main><section id='experience'>"
+            "<h2>Experience</h2></section></main></body></html>"
+        )
+        final = (
+            "<html><body><main><section id='experience'>"
+            "<h2>Experience</h2></section></main></body></html>"
+        )
+        result = _ensure_about_section(composed, final)
+        assert result == composed
 
     @pytest.mark.live
     def test_live_smoke_test(self) -> None:
