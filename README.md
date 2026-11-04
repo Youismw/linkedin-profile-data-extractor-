@@ -30,7 +30,7 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | **HTML Parsing** | **BeautifulSoup4** | `4.15.0` | Semantic DOM traversal, noise tag stripping, and heuristic attribute inspection. |
 | **HTML Parsing Engine** | **lxml** | `6.1.3` | High-performance C-accelerated tree builder for BeautifulSoup. |
 | **Spreadsheet I/O** | **openpyxl** | `3.1.5` | Ingests candidate `.xlsx` workbooks, resolves formulas (`=HYPERLINK`), and generates audit sheets. |
-| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, regression, and integration test suite (94 passing tests; one auth-dependent browser test is skipped when no saved session exists). |
+| **Test Automation** | **pytest** | `8.4.2` | Automated unit, contract, regression, and integration test suite (98 passing tests; one auth-dependent browser test is skipped when no saved session exists). |
 | **Code Quality / Linter** | **Ruff** | `0.15.0` | High-speed Rust-based code formatter and linter enforcing PEP 8 compliance. |
 | **Static Type Checking** | **Pyright & Mypy** | `1.1.408` / `2.4.1` | Static typing enforcement across all 28 source files (0 errors). |
 
@@ -51,7 +51,7 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | `.\run.bat logout` | `.\run logout` / `.\run clean-session` | **Clean Session**: Manually clears saved `.auth/state.json` so future runs prompt for login (pass `--all` to also reset remembered paths). |
 | `.\run.bat --help` | `.\run -h` | **Help & Manual**: Prints all available arguments, options, and flags. |
 | `.\extract.bat` | — | **Legacy Runner**: Retained for backward-compatibility; delegates directly to the extraction engine. |
-| `pytest -m "not live"` | — | **Automated Test Suite**: Executes the offline unit, contract, regression, and integration suite (94 passed; one browser-session test skipped when no saved session exists). |
+| `pytest -m "not live"` | — | **Automated Test Suite**: Executes the offline unit, contract, regression, and integration suite (98 passed; one browser-session test skipped when no saved session exists). |
 | `ruff check src tests` | — | **Lint Check**: Validates PEP 8 style, import ordering, and code cleanliness (0 errors). |
 | `pyright src tests` | — | **Type Engine Verification**: Verifies static typing across the entire codebase (0 errors). |
 | `mypy src tests` | — | **Strict Static Typing**: Runs Mypy static analysis across all 28 source files (0 errors). |
@@ -376,3 +376,26 @@ $env:PYTHONPATH="src"
 # Run static type analysis
 .\.venv\Scripts\python.exe -m pyright src tests
 ```
+
+## Recording-driven capture hardening (current working version)
+
+The Playwright fetcher now snapshots profile-card containers before scrolling and
+after each scroll/settle step. It retains the richest observed version of each card
+and composes those cards into the HTML passed to the existing parser. This is
+intended to prevent cards that disappear from the final DOM during LinkedIn's
+client-side page updates from being lost. Both the newer SDUI card IDs and the
+older `profileCardsAboveActivity*` / `profileCardsBelowActivity*` wrappers are
+handled. If no cards are detected, the fetcher falls back to the original final
+page HTML.
+
+This change preserves the existing parser's structured-field, `other_sections`,
+and `raw_text` behaviour; it does not force every visible LinkedIn card into a
+named field.
+Unclassified sections remain available through `other_sections` and the raw text
+dump. An additional narrow cleanup prevents LinkedIn's “helped me get this job”
+UI badge from being treated as a work-experience description.
+
+Offline verification: **98 passed, 1 skipped**. The skipped test needs an
+authenticated Playwright browser session. The recording-derived issue has not been
+retested against a live authenticated LinkedIn session in this environment. See
+[`RECORDING_REVIEW.md`](RECORDING_REVIEW.md) for observed mismatches and limits.

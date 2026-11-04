@@ -13,7 +13,9 @@ They verify:
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
+from profile_extractor.fetcher.playwright_fetcher import _compose_captured_profile_html
 from profile_extractor.models import ProfileDocument, Status
 from profile_extractor.parser import (
     parse_profile,
@@ -196,3 +198,110 @@ def test_identical_certification_cards_are_deduplicated() -> None:
     certs = doc.profile.certifications or []
     serialized = [item.model_dump_json() for item in certs]
     assert len(serialized) == len(set(serialized))
+
+
+def test_incremental_profile_card_capture_preserves_unmounted_about_and_featured() -> None:
+    """Cards seen in an earlier scroll snapshot survive if absent from the final DOM."""
+    html_path = LIVE_FIXTURES_DIR / "vishal-soam-5ba768168.html"
+    soup = BeautifulSoup(html_path.read_text(encoding="utf-8"), "lxml")
+
+    # Model separate viewport snapshots: the top card and About were seen first;
+    # Featured and Experience were seen in later snapshots. The fetcher composes
+    # these retained card fragments before the regular parser runs.
+    selectors = [
+        '[id$="Topcard"]',
+        '[id$="About"]',
+        '[id$="Featured"]',
+        '[id$="ExperienceTopLevelSection"]',
+    ]
+    cards = [str(soup.select_one(selector)) for selector in selectors]
+    assert all(card != "None" for card in cards)
+
+    merged_html = _compose_captured_profile_html(cards, "<html><body>fallback</body></html>")
+    doc = parse_profile(
+        source_url="https://www.linkedin.com/in/vishal-soam-5ba768168/",
+        slug="vishal-soam-5ba768168",
+        html=merged_html,
+        status=Status.OK,
+        important_fields=DEFAULT_IMPORTANT_FIELDS,
+    )
+
+    assert doc.profile.name == "Vishal Soam"
+    assert doc.profile.about is not None
+    assert doc.profile.about.startswith("Full Stack Engineer (MERN)")
+    assert "Featured" in [section.heading for section in doc.other_sections]
+    assert "My Resume" in (doc.raw_text or "")
+
+
+def test_linkedin_hired_badge_is_not_used_as_experience_description() -> None:
+    """The standalone badge text is UI metadata, not an employee-written description."""
+    html_path = LIVE_FIXTURES_DIR / "sujeet-patel-61987227a.html"
+    doc = parse_profile(
+        source_url="https://www.linkedin.com/in/sujeet-patel-61987227a/",
+        slug="sujeet-patel-61987227a",
+        html=html_path.read_text(encoding="utf-8"),
+        status=Status.OK,
+        important_fields=DEFAULT_IMPORTANT_FIELDS,
+    )
+
+    assert doc.profile.experience
+    assert all(
+        "helped me get this job" not in (item.description or "").lower()
+        for item in doc.profile.experience
+    )
+
+
+def test_composed_profile_cards_preserve_parser_output_for_all_eight_fixtures() -> None:
+    """Composing retained cards must not alter extraction on the saved profile pages."""
+    for html_path in sorted(LIVE_FIXTURES_DIR.glob("*.html")):
+        if html_path.name == "rohit_skills_details.html":
+            continue
+
+        original_html = html_path.read_text(encoding="utf-8")
+        soup = BeautifulSoup(original_html, "lxml")
+        candidate_cards = soup.select(
+            '[id^="com.linkedin.sdui.profile.card."], '
+            '[id^="profileCardsAboveActivity"], '
+            '[id^="profileCardsBelowActivity"]'
+        )
+        cards = []
+        for card in candidate_cards:
+            card_id = str(card.get("id") or "")
+            is_legacy_group = card_id.startswith((
+                "profileCardsAboveActivity", "profileCardsBelowActivity"
+            ))
+            if is_legacy_group and card.select_one(
+                '[id^="com.linkedin.sdui.profile.card."]'
+            ):
+                continue
+            cards.append(str(card))
+        if not cards:
+            continue
+
+        composed_html = _compose_captured_profile_html(cards, original_html)
+        original_doc = parse_profile(
+            source_url="https://www.linkedin.com/in/fixture/",
+            slug=html_path.stem,
+            html=original_html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+        composed_doc = parse_profile(
+            source_url="https://www.linkedin.com/in/fixture/",
+            slug=html_path.stem,
+            html=composed_html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+
+        assert composed_doc.profile.model_dump() == original_doc.profile.model_dump()
+        assert [item.model_dump() for item in composed_doc.other_sections] == [
+            item.model_dump() for item in original_doc.other_sections
+        ]
+        assert composed_doc.raw_text == original_doc.raw_text
+
+
+def test_card_composer_falls_back_when_no_profile_cards_were_seen() -> None:
+    """Non-SDUI pages retain the final HTML as the safe fallback."""
+    fallback_html = "<html><body><main><h1>Legacy profile</h1></main></body></html>"
+    assert _compose_captured_profile_html([], fallback_html) == fallback_html

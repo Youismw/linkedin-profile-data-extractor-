@@ -32,6 +32,80 @@ from profile_extractor.models import FetchResult, Reason, Status
 from profile_extractor.urls import extract_slug, sanitize_slug
 
 
+_CAPTURE_PROFILE_CARDS_JS = r"""() => {
+    const root = document.querySelector('main') || document.body || document.documentElement;
+    if (!root) return {count: 0, totalTextLength: 0};
+
+    const stateKey = '__profileExtractorCapturedCardsV1';
+    const state = window[stateKey] || (window[stateKey] = {order: [], cards: {}});
+    const cards = root.querySelectorAll(
+        '[id^="com.linkedin.sdui.profile.card."], ' +
+        '[id^="profileCardsAboveActivity"], ' +
+        '[id^="profileCardsBelowActivity"]'
+    );
+
+    for (const card of cards) {
+        const id = card.getAttribute('id');
+        if (!id) continue;
+
+        // The older LinkedIn layout uses profileCardsAbove/BelowActivity wrappers.
+        // Skip a wrapper when its child SDUI cards are captured individually; keep
+        // it when it is the only container for a section such as Interests.
+        const isLegacyGroup = id.startsWith('profileCardsAboveActivity')
+            || id.startsWith('profileCardsBelowActivity');
+        if (isLegacyGroup && card.querySelector(
+            '[id^="com.linkedin.sdui.profile.card."]'
+        )) continue;
+        const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+
+        const previous = state.cards[id];
+        if (!previous) state.order.push(id);
+        // Avoid serializing unchanged cards on every scroll step. Keep the richest
+        // version seen, including same-length text changes after hydration.
+        if (!previous || text !== previous.text) {
+            if (!previous || text.length >= previous.textLength) {
+                state.cards[id] = {html: card.outerHTML, text, textLength: text.length};
+            }
+        }
+    }
+
+    let totalTextLength = 0;
+    for (const id of state.order) {
+        totalTextLength += state.cards[id]?.textLength || 0;
+    }
+    return {count: state.order.length, totalTextLength};
+}"""
+
+_GET_CAPTURED_PROFILE_CARDS_JS = r"""() => {
+    const state = window.__profileExtractorCapturedCardsV1;
+    if (!state) return [];
+    return state.order.map(id => state.cards[id]?.html).filter(Boolean);
+}"""
+
+
+def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
+    """Build one parseable document from profile cards retained during scrolling.
+
+    LinkedIn can replace or virtualize cards as the viewport moves. The fetcher
+    therefore retains each SDUI profile card when encountered and composes the
+    richest captured version of each card into a single main landmark.
+    """
+    if not isinstance(cards, list):
+        return fallback_html
+
+    valid_cards = [card for card in cards if isinstance(card, str) and card.strip()]
+    if not valid_cards:
+        return fallback_html
+
+    return (
+        '<!doctype html><html><head><title>LinkedIn Profile Capture</title></head>'
+        '<body><main id="workspace">'
+        + "\n".join(valid_cards)
+        + "</main></body></html>"
+    )
+
+
 class PlaywrightFetcher:
     """Fetcher implementation using Chromium via Playwright sync API."""
 
@@ -115,6 +189,45 @@ class PlaywrightFetcher:
                 response = page.goto(url, wait_until="domcontentloaded")
                 status_code = response.status if response else None
 
+                # Wait for the profile shell to hydrate before moving the viewport.
+                # LinkedIn often returns DOMContentLoaded while the profile cards are
+                # still skeletons; immediate scrolling can skip the initial card set.
+                wait_for_function = getattr(page, "wait_for_function", None)
+                if callable(wait_for_function):
+                    try:
+                        wait_for_function(
+                            """() => {
+                                const main = document.querySelector('main');
+                                const card = main?.querySelector(
+                                    '[id^="com.linkedin.sdui.profile.card."]'
+                                );
+                                const cardText = (card?.innerText || '').trim();
+                                const heading = main?.querySelector('h1');
+                                const mainText = (main?.innerText || '').trim();
+                                const bodyText = (document.body?.innerText || '').toLowerCase();
+                                const terminalPage = [
+                                    'sign in to view',
+                                    'security verification',
+                                    'page not found',
+                                    'profile unavailable'
+                                ].some(token => bodyText.includes(token));
+                                return terminalPage || (card && cardText.length > 40)
+                                    || (heading && mainText.length > 40);
+                            }""",
+                            timeout=min(self.timeout_ms, 6000),
+                        )
+                    except PlaywrightTimeoutError:
+                        logger.warning(
+                            "Profile shell did not reach the expected ready state within 6s; "
+                            "continuing with incremental capture."
+                        )
+
+                # Capture profile cards before the first scroll. We also capture after
+                # each scroll/settle step because LinkedIn may virtualize cards that
+                # have moved out of the viewport. Only reading page.content() at the
+                # bottom can therefore lose About, Featured, or other early cards.
+                page.evaluate(_CAPTURE_PROFILE_CARDS_JS)
+
                 # --------------------------------------------------------------
                 # Progressive Container Scrolling:
                 # Scrolls document.querySelector('main') and window by 600px
@@ -122,6 +235,8 @@ class PlaywrightFetcher:
                 # --------------------------------------------------------------
                 reached_bottom = False
                 consecutive_at_bottom = 0
+                previous_card_text_length: int | None = None
+                stable_bottom_samples = 0
                 for _ in range(self.max_scroll_steps):
                     scroll_info = page.evaluate("""() => {
                         const m = document.querySelector('main')
@@ -146,15 +261,37 @@ class PlaywrightFetcher:
                         return { moved, atBottom };
                     }""")
                     page.wait_for_timeout(self.scroll_step_delay_ms)
+                    capture_info = page.evaluate(_CAPTURE_PROFILE_CARDS_JS)
+
                     if isinstance(scroll_info, dict):
-                        # Verify container reached and settled at the bottom
-                        if scroll_info.get("atBottom") and not scroll_info.get("moved"):
+                        at_bottom_and_still = (
+                            scroll_info.get("atBottom") and not scroll_info.get("moved")
+                        )
+                        if at_bottom_and_still:
                             consecutive_at_bottom += 1
-                            if consecutive_at_bottom >= 2:
+                            card_text_length = (
+                                capture_info.get("totalTextLength")
+                                if isinstance(capture_info, dict)
+                                else None
+                            )
+                            if (
+                                card_text_length is not None
+                                and card_text_length == previous_card_text_length
+                            ):
+                                stable_bottom_samples += 1
+                            else:
+                                stable_bottom_samples = 0
+                            previous_card_text_length = card_text_length
+
+                            # Require both scroll position and captured card text to
+                            # settle, rather than stopping after two empty bottom polls.
+                            if consecutive_at_bottom >= 3 and stable_bottom_samples >= 2:
                                 reached_bottom = True
                                 break
                         else:
                             consecutive_at_bottom = 0
+                            stable_bottom_samples = 0
+                            previous_card_text_length = None
 
                 if not reached_bottom and self.max_scroll_steps > 0:
                     logger.warning(
@@ -213,18 +350,25 @@ class PlaywrightFetcher:
                 except Exception as exp_err:
                     logger.debug("Could not expand inline controls: %s", exp_err)
 
-                # Settle delay for DOM mutations to finish rendering
+                # Settle delay for DOM mutations to finish rendering and take one
+                # final card snapshot after expansion.
                 page.wait_for_timeout(600)
+                page.evaluate(_CAPTURE_PROFILE_CARDS_JS)
 
                 current_url = page.url
-                html = page.content()
+                final_html = page.content()
 
-                # Detect outcome (ok, not_found, not_visible, blocked)
+                # Detect outcome using the actual final response DOM (not the
+                # synthetic merged document, which intentionally contains only
+                # retained profile cards).
                 status, reason, detail = detect_outcome(
                     current_url=current_url,
-                    html=html,
+                    html=final_html,
                     status_code=status_code,
                 )
+
+                captured_cards = page.evaluate(_GET_CAPTURED_PROFILE_CARDS_JS)
+                html = _compose_captured_profile_html(captured_cards, final_html)
 
                 # --------------------------------------------------------------
                 # In-Flight Authwall Recovery:

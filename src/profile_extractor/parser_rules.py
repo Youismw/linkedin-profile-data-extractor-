@@ -84,7 +84,7 @@ NOISE_LINE_PATTERNS: Final[list[re.Pattern[str]]] = [
 
 # UI badges and metadata that must never be treated as descriptions
 UI_BADGE_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?:LinkedIn helped me get this job|Show credential|See credential"
+    r"(?:LinkedIn helped me get this job|^helped me get this job$|Show credential|See credential"
     r"|Promoted|Verified certificate)",
     re.IGNORECASE,
 )

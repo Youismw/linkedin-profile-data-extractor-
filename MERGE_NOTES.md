@@ -32,3 +32,20 @@ Only one deep-detail HTML fixture (`rohit_skills_details.html`) was supplied. Ot
 ## Submission handling
 
 Use this tree as-is. Do not perform another automatic merge or broad refactor. Preserve `.git` from the working repository when copying these files over it; this ZIP itself does not contain Git history. Do not commit `.auth/`, `input/`, `output/`, `logs/`, `.run_state.json`, or other session/output data.
+
+
+## Follow-up: recording-driven capture hardening
+
+This working tree adds incremental profile-card snapshots in
+`src/profile_extractor/fetcher/playwright_fetcher.py`, preserving both SDUI and
+legacy LinkedIn card-wrapper formats. It composes the richest observed version
+of each card into the parser input and falls back to final page HTML when no
+recognized cards are captured. The parser continues to leave unclassified
+sections in `other_sections` / `raw_text`. A narrow UI-badge rule prevents
+“helped me get this job” from being misattributed as experience description.
+
+Latest verification: 98 passed, 1 skipped; compileall and capture-script Node
+syntax check passed. The eight-fixture dry run preserved exact `profile` and
+`other_sections` output from the original fixture HTML. Live authenticated
+LinkedIn execution was not available, so this must not be represented as live
+verified. See `RECORDING_REVIEW.md`.
