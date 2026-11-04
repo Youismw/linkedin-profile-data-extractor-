@@ -467,7 +467,10 @@ class ExtractorApp:
             elif "[info]" in lower:
                 tag = "info"
 
-        self.log_text.insert(tk.END, line, tag)
+        if tag is not None:
+            self.log_text.insert(tk.END, line, tag)
+        else:
+            self.log_text.insert(tk.END, line)
         self.log_text.see(tk.END)
 
     # --------------------------------------------------------------------------
@@ -522,8 +525,8 @@ class ExtractorApp:
         if self.prune_var.get():
             cmd.append("--prune")
 
-        scroll_steps = int(self.scroll_steps_var.get())
-        step_time = int(self.step_time_var.get())
+        scroll_steps = (self.scroll_steps_var.get())
+        step_time = (self.step_time_var.get())
         cmd.extend(["--scrollsteps", str(scroll_steps)])
         cmd.extend(["--steptime", str(step_time)])
 
