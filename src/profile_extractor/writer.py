@@ -117,7 +117,9 @@ def write_profile_json(
     try:
         target_path.relative_to(out_dir)
     except ValueError:
-        raise ValueError(f"Path traversal detected: {filename_stem!r} escapes {out_dir}")
+        raise ValueError(
+            f"Path traversal detected: {filename_stem!r} escapes {out_dir}"
+        ) from None
 
     # Serialize using contract model method
     data = document.to_serializable_dict()

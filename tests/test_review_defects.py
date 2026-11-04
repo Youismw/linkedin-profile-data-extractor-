@@ -344,7 +344,7 @@ class TestReviewDefectFixes:
     def test_csv_headerless_detection_preserves_first_candidate(
         self, tmp_path: Path
     ) -> None:
-        """Verify headerless CSV does not discard first candidate whose job title contains 'profile'."""
+        """Verify headerless CSV does not discard first candidate with 'profile' in title."""
         csv_file = tmp_path / "candidates.csv"
         csv_file.write_text(
             "Profile Engineer,Jane Doe,https://www.linkedin.com/in/jane-doe/\n"

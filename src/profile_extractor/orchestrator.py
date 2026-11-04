@@ -21,6 +21,9 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+from bs4 import BeautifulSoup
 
 from profile_extractor.config import ExtractorConfig
 from profile_extractor.fetcher import Fetcher
@@ -32,9 +35,13 @@ from profile_extractor.models import (
     UnreachableRecord,
 )
 from profile_extractor.parser import (
+    _is_placeholder_value,
+    parse_certifications_details,
     parse_education_details,
     parse_experience_details,
+    parse_languages_details,
     parse_profile,
+    parse_projects_details,
     parse_skills_details,
 )
 from profile_extractor.reader import read_profile_urls
@@ -44,6 +51,21 @@ from profile_extractor.writer import (
     write_run_summary,
     write_unreachable_report,
 )
+
+
+def _count_field_richness(items: Any) -> int:
+    """Calculate total non-empty information score across a collection of items."""
+    if not isinstance(items, (list, tuple)):
+        return 0
+    score = 0
+    for it in items:
+        if isinstance(it, str):
+            if it.strip():
+                score += 1
+        elif hasattr(it, "model_dump"):
+            dump = it.model_dump(exclude_none=True)
+            score += len(dump)
+    return score
 
 
 def run_pipeline(
@@ -204,8 +226,11 @@ def run_pipeline(
                         detail_specs = [
                             (
                                 "skills",
-                                [r"/details/skills/", r"show all\s*(?:\d+)?\s*skills",
-                                 r"skills\s*\(\d+\)"],
+                                [
+                                    r"/details/skills/",
+                                    r"show all\s*(?:\d+)?\s*skills",
+                                    r"skills\s*\(\d+\)",
+                                ],
                                 parse_skills_details,
                             ),
                             (
@@ -217,6 +242,33 @@ def run_pipeline(
                                 "experience",
                                 [r"/details/experience/", r"show all\s*(?:\d+)?\s*experience"],
                                 parse_experience_details,
+                            ),
+                            (
+                                "certifications",
+                                [
+                                    r"/details/certifications/",
+                                    r"show all\s*(?:\d+)?\s*certifications",
+                                    r"licenses\s*(?:&|and)\s*certifications",
+                                ],
+                                parse_certifications_details,
+                            ),
+                            (
+                                "projects",
+                                [
+                                    r"/details/projects/",
+                                    r"show all\s*(?:\d+)?\s*projects",
+                                    r"projects\s*\(\d+\)",
+                                ],
+                                parse_projects_details,
+                            ),
+                            (
+                                "languages",
+                                [
+                                    r"/details/languages/",
+                                    r"show all\s*(?:\d+)?\s*languages",
+                                    r"languages\s*\(\d+\)",
+                                ],
+                                parse_languages_details,
                             ),
                         ]
                         for section, patterns, parse_fn in detail_specs:
@@ -268,6 +320,23 @@ def run_pipeline(
                                 continue
                             if not detail_res.html:
                                 continue
+
+                            # Preserve subpage raw text in doc.raw_text for recovery audit
+                            sub_soup = BeautifulSoup(detail_res.html, "lxml")
+                            for s_tag in sub_soup.find_all(
+                                ["script", "style", "noscript", "svg", "template"]
+                            ):
+                                s_tag.decompose()
+                            sub_text = (sub_soup.find("main") or sub_soup).get_text(
+                                separator="\n", strip=True
+                            )
+                            if sub_text:
+                                doc.raw_text = (
+                                    (doc.raw_text or "")
+                                    + f"\n\n--- Subpage: {section} ---\n"
+                                    + sub_text
+                                )
+
                             deep_items = parse_fn(detail_res.html)
                             current_items = getattr(doc.profile, section)
                             current_count = (
@@ -277,22 +346,29 @@ def run_pipeline(
                             )
                             if (
                                 isinstance(deep_items, (list, tuple))
-                                and len(deep_items) > current_count
+                                and len(deep_items) > 0
                             ):
-                                logger.info(
-                                    "Row %d: unrolled %d total %s (was %d)",
-                                    row.row_number,
-                                    len(deep_items),
-                                    section,
-                                    current_count,
-                                )
-                                setattr(doc.profile, section, deep_items)
+                                deep_score = _count_field_richness(deep_items)
+                                current_score = _count_field_richness(current_items)
+                                if len(deep_items) >= current_count or deep_score >= current_score:
+                                    logger.info(
+                                        "Row %d: unrolled %d total %s (was %d, score %d vs %d)",
+                                        row.row_number,
+                                        len(deep_items),
+                                        section,
+                                        current_count,
+                                        deep_score,
+                                        current_score,
+                                    )
+                                    setattr(doc.profile, section, deep_items)
                         # Recalculate missing fields after unrolling details
                         missing_fields = []
                         profile_data = doc.profile.model_dump(exclude_none=True)
                         for field in config.important_fields:
                             val = profile_data.get(field)
                             if val is None or (isinstance(val, list) and len(val) == 0):
+                                missing_fields.append(field)
+                            elif isinstance(val, str) and _is_placeholder_value(val):
                                 missing_fields.append(field)
                         doc.meta.missing_fields = missing_fields
 

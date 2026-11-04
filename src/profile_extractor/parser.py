@@ -26,29 +26,41 @@ from bs4 import BeautifulSoup, Tag
 
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import (
+    CertificationItem,
     EducationItem,
     ExperienceItem,
+    LanguageItem,
     Meta,
     OtherSection,
     Profile,
     ProfileDocument,
+    ProjectItem,
     Reason,
     Status,
 )
 from profile_extractor.parser_rules import (
     ABOUT_PATTERNS,
+    ACTIVITIES_PATTERN,
+    CERTIFICATIONS_PATTERNS,
     DATE_RANGE_PATTERN,
     DURATION_PATTERN,
     EDUCATION_PATTERNS,
     EMPLOYMENT_TYPE_SUFFIX_PATTERN,
     EXPERIENCE_PATTERNS,
+    GRADE_PATTERN,
     KNOWN_SECTION_IDS,
+    LANGUAGES_PATTERNS,
     NOISE_LINE_PATTERNS,
+    PLACEHOLDER_REGEX,
+    PROJECTS_PATTERNS,
     PRONOUN_PATTERN,
+    SKILLS_CHIP_PATTERN,
     SKILLS_PATTERNS,
     SKIP_SECTION_PATTERNS,
     STRIP_SELECTORS,
     STRIP_TAGS,
+    UI_BADGE_PATTERN,
+    WORKPLACE_TYPES,
 )
 
 GENERIC_ERROR_HEADING_PATTERN = re.compile(
@@ -102,12 +114,17 @@ def _extract_section_heading(section: Tag) -> str:
     """Find and return the heading text of a section.
 
     Inspection cascade:
-    1. Direct <h2>, <h3>, or <header> tags.
+    1. Direct <h2>, <h3>, or <header> tags belonging directly to this section.
+       Ignores headings belonging to nested child <section> tags.
     2. 'aria-label' attribute on the section container.
     3. 'id' attribute on the section container.
     """
-    # 1. Check for standard heading tags inside section
+    # 1. Check for standard heading tags directly belonging to this section
     for heading_tag in section.find_all(["h2", "h3", "header"], recursive=True):
+        # Ignore headings belonging to a child <section>
+        parent_sec = heading_tag.find_parent("section")
+        if parent_sec is not None and parent_sec != section:
+            continue
         txt = _clean_text(heading_tag.get_text(separator=" "))
         if txt:
             return txt
@@ -125,101 +142,214 @@ def _extract_section_heading(section: Tag) -> str:
     return ""
 
 
-def _get_section_items(sec: Tag) -> list[Tag]:
-    """Extract individual item tags from a profile section.
+def _filter_top_level_tags(tags: Sequence[Tag]) -> list[Tag]:
+    """Filter out descendant tags so only top-level container tags are retained.
+
+    Guards against descendant duplication where an entity card contains nested
+    collection items or listitems.
+    """
+    tag_set = set(tags)
+    return [t for t in tags if not any(p in tag_set for p in t.parents)]
+
+
+def _get_container_entity_items(container: Tag) -> list[Tag]:
+    """Extract top-level entity item tags from any DOM container (section or subpage main).
 
     Inspection cascade:
     1. Modern LinkedIn LazyColumn component (<div data-component-type="LazyColumn">).
-       Grabs top-level entity collection items.
+       Grabs entity-collection-item elements.
     2. Direct [role="listitem"] elements.
     3. Direct <li> elements (ul > li or ol > li).
+    4. Top-level direct children.
+    Always applies top-level filtering to prevent parent-child duplication.
     """
-    # Strategy 1: Modern LinkedIn LazyColumn component
-    lazy_col = sec.select_one('[data-component-type="LazyColumn"]')
-    if lazy_col:
-        items = [
-            el
-            for el in lazy_col.select("div[componentkey]")
-            if "entity-collection-item" in str(el.get("componentkey", ""))
-        ]
-        if items:
-            return items
-        role_items = [el for el in lazy_col.select('[role="listitem"]') if isinstance(el, Tag)]
+    candidates: list[Tag] = []
+    lazy_col = container.select_one('[data-component-type="LazyColumn"]')
+    search_root = lazy_col if lazy_col is not None else container
+
+    # Strategy 1: entity-collection-item
+    items = [
+        el
+        for el in search_root.select("div[componentkey]")
+        if "entity-collection-item" in str(el.get("componentkey", "")) and isinstance(el, Tag)
+    ]
+    if items:
+        candidates = items
+    else:
+        # Strategy 2: [role="listitem"]
+        role_items = [el for el in search_root.select('[role="listitem"]') if isinstance(el, Tag)]
         if role_items:
-            return role_items
-        direct_children = [c for c in lazy_col.children if isinstance(c, Tag)]
-        if direct_children:
-            return direct_children
+            candidates = role_items
+        else:
+            # Strategy 3: <li> elements
+            lis = [li for li in search_root.select("ul > li, ol > li") if isinstance(li, Tag)]
+            if lis:
+                candidates = lis
+            elif lazy_col is not None:
+                candidates = [c for c in lazy_col.children if isinstance(c, Tag)]
 
-    # Strategy 2: Direct ARIA listitems within section
-    role_items = [el for el in sec.select('[role="listitem"]') if isinstance(el, Tag)]
-    if role_items:
-        return role_items
+    return _filter_top_level_tags(candidates)
 
-    # Strategy 3: Direct <li> elements
-    direct_lis = [li for li in sec.find_all("li", recursive=False) if isinstance(li, Tag)]
-    if direct_lis:
-        return direct_lis
-    ul = sec.find(["ul", "ol"])
-    if ul and isinstance(ul, Tag):
-        nested_lis = [c for c in ul.children if isinstance(c, Tag) and c.name == "li"]
-        if nested_lis:
-            return nested_lis
 
-    return []
+def _get_section_items(sec: Tag) -> list[Tag]:
+    """Extract individual top-level item tags from a profile section."""
+    return _get_container_entity_items(sec)
+
+
+def _is_placeholder_value(text: str | None) -> bool:
+    """Return True if the text represents a placeholder rather than usable content."""
+    if not text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    return bool(PLACEHOLDER_REGEX.match(stripped))
+
+
+def _clean_field_value(text: str | None) -> str | None:
+    """Return None if text is empty or a placeholder value, else cleaned text."""
+    if not text or _is_placeholder_value(text):
+        return None
+    return _clean_text(text)
+
+
+def _is_location_line(line: str) -> bool:
+    """Return True if the text line semantically represents a location or workplace mode."""
+    if not line or len(line) > 85:
+        return False
+    # Narrative sentences ending in period are not locations (except D.C. / U.S.)
+    if line.endswith(".") and not line.endswith(" D.C.") and not line.endswith(" U.S."):
+        return False
+    # Never match dates, durations, skills chips, or UI noise as location
+    if DATE_RANGE_PATTERN.search(line) or DURATION_PATTERN.search(line):
+        return False
+    if SKILLS_CHIP_PATTERN.search(line) or UI_BADGE_PATTERN.search(line):
+        return False
+    if any(p.search(line) for p in NOISE_LINE_PATTERNS):
+        return False
+    if WORKPLACE_TYPES.search(line):
+        return True
+    if "," in line and not re.search(r"\b(?:and|\&|with|inc|llc|ltd|co)\b", line, re.IGNORECASE):
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) >= 2 and all(len(p) <= 40 for p in parts):
+            return True
+    if re.search(
+        r"\b(?:Area|Metro(?:politan)?|Region|City|District|County)\b",
+        line,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _is_grouped_experience(tag: Tag) -> tuple[bool, list[Tag]]:
+    """Determine if an experience card represents a genuine multi-role company.
+
+    Returns:
+        (True, sub_role_tags) if this card contains 2 or more distinct positions
+        with their own date ranges or job metadata under a single employer.
+        (False, []) if this is a single position (including when the job description
+        contains HTML bullet lists <ul><li>...</li></ul>).
+    """
+    nested_lis = [el for el in tag.find_all("li") if isinstance(el, Tag)]
+    if not nested_lis:
+        return False, []
+
+    cand_items = _filter_top_level_tags(nested_lis)
+    if len(cand_items) < 2:
+        return False, []
+
+    # Exclude list items that are inside an obvious narrative/description container
+    filtered_items: list[Tag] = []
+    for cand in cand_items:
+        inside_desc = False
+        for parent in cand.parents:
+            if parent is tag or not isinstance(parent, Tag):
+                continue
+            raw_cls = parent.get("class")
+            cls_list = [raw_cls] if isinstance(raw_cls, str) else (raw_cls or [])
+            if (
+                "inline-show-more-text" in cls_list
+                or "show-more-less-html" in cls_list
+                or parent.name == "p"
+                or parent.get("data-field") == "description"
+            ):
+                inside_desc = True
+                break
+        if not inside_desc:
+            filtered_items.append(cand)
+
+    if len(filtered_items) < 2:
+        return False, []
+
+    # In a genuine multi-position company, each position item has its own distinct date range.
+    # Bullet lists in descriptions describe duties without individual date ranges.
+    roles_with_dates = [
+        it
+        for it in filtered_items
+        if any(
+            DATE_RANGE_PATTERN.search(s) or DURATION_PATTERN.search(s)
+            for s in it.stripped_strings
+        )
+    ]
+
+    if len(roles_with_dates) >= 2:
+        return True, filtered_items
+
+    return False, []
 
 
 def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
-    """Extract structured fields from an experience item tag.
+    """Extract structured fields from an experience item tag using semantic classification.
 
     Handles:
     - Multi-role company containers (e.g. Google with CEO and Product Management sub-roles).
-    - Single-role entries (Title, Company, Dates, Location, Description).
-    - Field inversion protection (long text routed to description instead of title).
+    - Single-role entries (Title, Company, Dates, Location, Description, Skills Preview).
+    - Distinguishes description bullet lists (<ul><li>...</li></ul>) from fake jobs.
+    - Rejection of UI badges ('LinkedIn helped me get this job') from descriptions.
+    - Identification of skills chips ('Node.js, MongoDB and +2 skills') without
+      polluting the description field.
     """
-    nested_lis = tag.find_all("li")
-    # Check if this item is a multi-role company
-    if nested_lis:
+    is_grouped, sub_role_tags = _is_grouped_experience(tag)
+    if is_grouped:
         top_lines = _clean_role_lines(tag)
         parent_company = _clean_company_name(top_lines[0] if top_lines else "Unknown")
 
         results: list[ExperienceItem] = []
-        for n_li in nested_lis:
-            li_lines = _clean_role_lines(n_li)
-            if not li_lines:
+        for s_tag in sub_role_tags:
+            s_lines = _clean_role_lines(s_tag)
+            if not s_lines:
                 continue
-            sub_title = li_lines[0] if li_lines else None
+            sub_title = s_lines[0] if s_lines else None
             sub_dates: str | None = None
             sub_loc: str | None = None
-            desc_parts: list[str] = []
+            sub_skills: str | None = None
+            sub_desc_parts: list[str] = []
 
-            for line in li_lines[1:]:
+            for line in s_lines[1:]:
+                if UI_BADGE_PATTERN.search(line):
+                    continue
+                if SKILLS_CHIP_PATTERN.search(line):
+                    sub_skills = line
+                    continue
                 if not sub_dates and (
                     DATE_RANGE_PATTERN.search(line) or DURATION_PATTERN.search(line)
                 ):
                     sub_dates = line
-                elif not sub_loc and any(
-                    kw in line.lower()
-                    for kw in [
-                        "on-site",
-                        "hybrid",
-                        "remote",
-                        "india",
-                        "united states",
-                        "california",
-                    ]
-                ):
+                    continue
+                if not sub_loc and _is_location_line(line):
                     sub_loc = line
-                elif not any(p.search(line) for p in NOISE_LINE_PATTERNS) and line not in [
+                    continue
+                if not any(p.search(line) for p in NOISE_LINE_PATTERNS) and line not in (
                     "…",
                     "...",
                     "more",
                     "see more",
-                ]:
-                    desc_parts.append(line)
+                ):
+                    sub_desc_parts.append(line)
 
-            raw_text = " | ".join(li_lines)
-            desc_str = " ".join(desc_parts) if desc_parts else None
+            raw_text = _clean_text(s_tag.get_text(separator=" | "))
+            desc_str = " ".join(sub_desc_parts) if sub_desc_parts else None
 
             # Guard against description in title
             if sub_title and (len(sub_title) > 90 or (len(sub_title) > 60 and "." in sub_title)):
@@ -236,23 +366,62 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
                     dates=sub_dates,
                     location=sub_loc,
                     description=desc_str,
+                    skills_preview=sub_skills,
                     raw=raw_text,
                 )
             )
         if results:
             return results
 
-    # Standard single-role layout
-    lines = _clean_role_lines(tag)
+    # Standard single-role layout with semantic line interpretation
+    raw_lines = _clean_role_lines(tag)
+    if not raw_lines:
+        return []
+
+    lines = [
+        line
+        for line in raw_lines
+        if not UI_BADGE_PATTERN.search(line) and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
+    ]
     if not lines:
         return []
 
     title: str | None = lines[0]
-    company: str | None = _clean_company_name(lines[1]) if len(lines) > 1 else None
-    dates: str | None = lines[2] if len(lines) > 2 else None
-    location: str | None = lines[3] if len(lines) > 3 else None
-    description: str | None = " ".join(lines[4:]) if len(lines) > 4 else None
-    raw_text = " | ".join(lines)
+    company: str | None = None
+    dates: str | None = None
+    location: str | None = None
+    skills_preview: str | None = None
+    desc_parts: list[str] = []
+
+    for line in lines[1:]:
+        # Skills chip (e.g. "Node.js, MongoDB and +2 skills")
+        if SKILLS_CHIP_PATTERN.search(line):
+            skills_preview = line
+            continue
+
+        # Dates / duration
+        if not dates and (
+            DATE_RANGE_PATTERN.search(line) or DURATION_PATTERN.search(line)
+        ):
+            dates = line
+            continue
+
+        # Location / modality
+        if not location and _is_location_line(line):
+            location = line
+            continue
+
+        # Company name
+        if not company:
+            company = _clean_company_name(line)
+            continue
+
+        # Narrative description (including bullet list texts!)
+        if line not in ("…", "...", "more", "see more"):
+            desc_parts.append(line)
+
+    description: str | None = " ".join(desc_parts) if desc_parts else None
+    raw_text = _clean_text(tag.get_text(separator=" | "))
 
     # Invert-proof title guard
     if title and (len(title) > 90 or (len(title) > 60 and "." in title)):
@@ -269,39 +438,170 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
             dates=dates,
             location=location,
             description=description,
+            skills_preview=skills_preview,
             raw=raw_text,
         )
     ]
 
 
 def _parse_education_item(tag: Tag) -> EducationItem:
-    """Extract structured fields and complete raw text from an education entry.
+    """Extract structured fields from an education entry using semantic line classification.
 
-    Extracts: School / Institution, Degree / Major, Dates / Honors, and full raw string.
+    Extracts: School / Institution, Degree / Major, Dates, Grade / Honors, and full raw string.
+    Distinguishes grades/CGPA from dates to prevent field pollution.
     """
     raw_lines = [
         _clean_text(line)
         for line in tag.stripped_strings
-        if _clean_text(line) and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
+        if _clean_text(line)
+        and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
+        and not UI_BADGE_PATTERN.search(line)
     ]
     lines = _dedupe_consecutive(raw_lines)
     raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
 
-    school: str | None = None
+    school: str | None = lines[0] if lines else None
     degree: str | None = None
     dates: str | None = None
+    grade: str | None = None
+    activities: str | None = None
 
-    if lines:
-        school = lines[0]
-    if len(lines) > 1:
-        degree = lines[1]
-    if len(lines) > 2:
-        dates = lines[2]
+    for line in lines[1:]:
+        # Grade / CGPA pattern
+        if not grade and GRADE_PATTERN.search(line):
+            grade = line
+            continue
+
+        # Activities pattern
+        if not activities and ACTIVITIES_PATTERN.search(line):
+            activities = line
+            continue
+
+        # Dates / Year range pattern (e.g. "2018 - 2022", "May 2020")
+        if not dates and (
+            DATE_RANGE_PATTERN.search(line)
+            or re.search(r"\b\d{4}\s*[-–]\s*(?:\d{4}|Present)\b", line)
+        ):
+            dates = line
+            continue
+
+        # Degree / Field of study
+        if not degree:
+            degree = line
+            continue
 
     return EducationItem(
         school=school,
         degree=degree,
         dates=dates,
+        grade=grade,
+        activities=activities,
+        raw=raw_text,
+    )
+
+
+def _parse_certification_item(tag: Tag) -> CertificationItem:
+    """Extract structured fields from a license / certification entry."""
+    lines = _clean_role_lines(tag)
+    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
+
+    name: str | None = lines[0] if lines else None
+    issuer: str | None = None
+    issue_date: str | None = None
+    expiration_date: str | None = None
+    credential_id: str | None = None
+    credential_url: str | None = None
+
+    cred_a = tag.find("a", href=True)
+    if cred_a and isinstance(cred_a, Tag):
+        href = str(cred_a.get("href", ""))
+        if "http" in href:
+            credential_url = href
+
+    for line in lines[1:]:
+        line_lower = line.lower()
+        if "issued" in line_lower and not issue_date:
+            issue_date = line
+            continue
+        if "expires" in line_lower and not expiration_date:
+            expiration_date = line
+            continue
+        if "credential id" in line_lower and not credential_id:
+            credential_id = line
+            continue
+        if not issuer and not any(
+            kw in line_lower for kw in ("show credential", "see credential", "skills:")
+        ):
+            issuer = line
+            continue
+
+    return CertificationItem(
+        name=name,
+        issuer=issuer,
+        issue_date=issue_date,
+        expiration_date=expiration_date,
+        credential_id=credential_id,
+        credential_url=credential_url,
+        raw=raw_text,
+    )
+
+
+def _parse_project_item(tag: Tag) -> ProjectItem:
+    """Extract structured fields from an academic, personal, or professional project entry."""
+    lines = _clean_role_lines(tag)
+    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
+
+    title: str | None = lines[0] if lines else None
+    dates: str | None = None
+    description_parts: list[str] = []
+    project_skills: list[str] | None = None
+    url: str | None = None
+
+    a_tag = tag.find("a", href=True)
+    if a_tag and isinstance(a_tag, Tag):
+        href = str(a_tag.get("href", ""))
+        if "http" in href and "linkedin.com" not in href:
+            url = href
+
+    for line in lines[1:]:
+        if not dates and (DATE_RANGE_PATTERN.search(line) or re.search(r"\b\d{4}\b", line)):
+            dates = line
+            continue
+        if SKILLS_CHIP_PATTERN.search(line) or line.lower().startswith("skills:"):
+            clean_sk = re.sub(
+                r"^(?:skills|associated skills)\s*:\s*", "", line, flags=re.IGNORECASE
+            )
+            project_skills = [
+                s.strip()
+                for s in re.split(r"[,·|]", clean_sk)
+                if s.strip() and not re.search(r"\+\d+\s+skills?", s, re.IGNORECASE)
+            ]
+            continue
+        if line not in ("…", "...", "more", "see more") and not UI_BADGE_PATTERN.search(line):
+            description_parts.append(line)
+
+    description = " ".join(description_parts) if description_parts else None
+    return ProjectItem(
+        title=title,
+        dates=dates,
+        description=description,
+        url=url,
+        skills=project_skills,
+        raw=raw_text,
+    )
+
+
+def _parse_language_item(tag: Tag) -> LanguageItem:
+    """Extract structured fields from a language proficiency entry."""
+    lines = _clean_role_lines(tag)
+    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
+
+    name: str | None = lines[0] if lines else None
+    proficiency: str | None = lines[1] if len(lines) > 1 else None
+
+    return LanguageItem(
+        name=name,
+        proficiency=proficiency,
         raw=raw_text,
     )
 
@@ -347,6 +647,27 @@ def _parse_other_section(sec: Tag, heading: str) -> OtherSection | None:
     return None
 
 
+def _is_valid_skill(cand: str) -> bool:
+    """Validate whether an extracted line is genuinely a skill name."""
+    if not cand or len(cand) > 60:
+        return False
+    if cand in ["Skills", "Show all", "Endorsements", "More profiles for you"]:
+        return False
+    if re.search(r"^\d+\s+endorsements?$", cand, re.IGNORECASE):
+        return False
+    if re.search(r"^show all\b", cand, re.IGNORECASE):
+        return False
+    if re.search(r"\b(?:experiences? across|endorsed by)\b", cand, re.IGNORECASE):
+        return False
+    if re.search(
+        r"\b(?:engineer|developer|analyst|manager|consultant|architect)\s+at\b",
+        cand,
+        re.IGNORECASE,
+    ):
+        return False
+    return True
+
+
 def parse_skills_details(html: str) -> list[str]:
     """Parse all skills from a LinkedIn /details/skills/ page."""
     soup = BeautifulSoup(html, "lxml")
@@ -356,18 +677,15 @@ def parse_skills_details(html: str) -> list[str]:
         tag.decompose()
 
     main = soup.find("main") or soup
-    items = main.select('div[componentkey^="entity-collection-item"], [role="listitem"], li')
+    top_items = _get_container_entity_items(main)
+
     skills: list[str] = []
-    for it in items:
+    for it in top_items:
         lines = [_clean_text(s) for s in it.stripped_strings if _clean_text(s)]
         if not lines:
             continue
         cand = lines[0]
-        if cand in ["Skills", "Show all", "Endorsements", "More profiles for you"]:
-            continue
-        if re.search(r"^\d+\s+endorsements?$", cand, re.IGNORECASE):
-            continue
-        if cand not in skills:
+        if _is_valid_skill(cand) and cand not in skills:
             skills.append(cand)
     return skills
 
@@ -381,14 +699,9 @@ def parse_education_details(html: str) -> list[EducationItem]:
         tag.decompose()
 
     main = soup.find("main") or soup
-    lazy = main.select_one('[data-component-type="LazyColumn"]')
-    items = (
-        lazy.select('div[componentkey^="entity-collection-item"]')
-        if lazy
-        else main.select('[role="listitem"], li')
-    )
+    top_items = _get_container_entity_items(main)
     results: list[EducationItem] = []
-    for it in items:
+    for it in top_items:
         edu = _parse_education_item(it)
         if edu.school or edu.raw:
             results.append(edu)
@@ -404,16 +717,65 @@ def parse_experience_details(html: str) -> list[ExperienceItem]:
         tag.decompose()
 
     main = soup.find("main") or soup
-    lazy = main.select_one('[data-component-type="LazyColumn"]')
-    items = (
-        lazy.select('div[componentkey^="entity-collection-item"]')
-        if lazy
-        else main.select('[role="listitem"], li')
-    )
+    top_items = _get_container_entity_items(main)
     results: list[ExperienceItem] = []
-    for it in items:
+    for it in top_items:
         exps = _parse_experience_items(it)
         results.extend(exps)
+    return results
+
+
+def parse_certifications_details(html: str) -> list[CertificationItem]:
+    """Parse all certifications from a LinkedIn /details/certifications/ page."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.select(
+        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
+    ):
+        tag.decompose()
+
+    main = soup.find("main") or soup
+    top_items = _get_container_entity_items(main)
+    results: list[CertificationItem] = []
+    for it in top_items:
+        cert = _parse_certification_item(it)
+        if cert.name or cert.raw:
+            results.append(cert)
+    return results
+
+
+def parse_projects_details(html: str) -> list[ProjectItem]:
+    """Parse all projects from a LinkedIn /details/projects/ page."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.select(
+        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
+    ):
+        tag.decompose()
+
+    main = soup.find("main") or soup
+    top_items = _get_container_entity_items(main)
+    results: list[ProjectItem] = []
+    for it in top_items:
+        proj = _parse_project_item(it)
+        if proj.title or proj.raw:
+            results.append(proj)
+    return results
+
+
+def parse_languages_details(html: str) -> list[LanguageItem]:
+    """Parse all languages from a LinkedIn /details/languages/ page."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.select(
+        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
+    ):
+        tag.decompose()
+
+    main = soup.find("main") or soup
+    top_items = _get_container_entity_items(main)
+    results: list[LanguageItem] = []
+    for it in top_items:
+        lang = _parse_language_item(it)
+        if lang.name or lang.raw:
+            results.append(lang)
     return results
 
 
@@ -502,17 +864,21 @@ def parse_profile(
     main = soup.find("main") or soup
     top_card = None
 
-    # Filter out outer layout containers, nested carousels, and dialogs
-    valid_sections: list[Tag] = []
-    for sec in main.find_all("section"):
-        if sec.get("aria-label") == "Primary content":
-            continue
-        if sec.get("aria-roledescription") == "carousel" or sec.get("data-testid") == "carousel":
-            continue
-        sec_text = sec.get_text(separator=" ", strip=True)
-        if re.search(r"^\d+\s+notification", sec_text, re.IGNORECASE):
-            continue
-        valid_sections.append(sec)
+    # Filter out outer layout containers, nested sections, and carousels
+    candidate_sections = [
+        sec
+        for sec in main.find_all("section")
+        if sec.get("aria-label") != "Primary content"
+        and sec.get("aria-roledescription") != "carousel"
+        and sec.get("data-testid") != "carousel"
+        and not re.search(
+            r"^\d+\s+notification", sec.get_text(separator=" ", strip=True), re.IGNORECASE
+        )
+    ]
+    cand_sec_set = set(candidate_sections)
+    valid_sections: list[Tag] = [
+        sec for sec in candidate_sections if not any(p in cand_sec_set for p in sec.parents)
+    ]
 
     # Strategy A: Check <h1> tags (rejecting generic error page headings)
     h1 = soup.find("h1")
@@ -569,7 +935,7 @@ def parse_profile(
             if contact_idx != -1:
                 for idx in range(contact_idx - 1, max(0, contact_idx - 4), -1):
                     prev = filtered[idx]
-                    if prev in ["·", "\u00b7", "-", "—"]:
+                    if prev in ["·", "\u00b7", "-", "—"] or _is_placeholder_value(prev):
                         continue
                     location = prev
                     break
@@ -579,19 +945,9 @@ def parse_profile(
                 for cand in filtered[name_idx + 1 : name_idx + 7]:
                     if cand == headline:
                         continue
-                    geo_match = re.search(
-                        r"\b(area|united states|india|germany|uk|canada|california"
-                        r"|delhi|london|greater|san francisco|munich|bavaria)\b",
-                        cand,
-                        re.IGNORECASE,
-                    )
-                    comma_geo = "," in cand and not re.search(
-                        r"\b(engineer|developer|manager|lead|director|student|founder"
-                        r"|intern|designer|consultant|analyst|specialist)\b",
-                        cand,
-                        re.IGNORECASE,
-                    )
-                    if geo_match or comma_geo:
+                    if _is_placeholder_value(cand):
+                        continue
+                    if _is_location_line(cand):
                         if not re.search(
                             r"\b(contact info|connections|connect|message|followers)\b",
                             cand,
@@ -652,6 +1008,9 @@ def parse_profile(
     experience: list[ExperienceItem] | None = None
     education: list[EducationItem] | None = None
     skills: list[str] | None = None
+    certifications: list[CertificationItem] | None = None
+    projects: list[ProjectItem] | None = None
+    languages: list[LanguageItem] | None = None
     other_sections: list[OtherSection] = []
 
     seen_sections: set[int] = set()
@@ -732,15 +1091,46 @@ def parse_profile(
                 lines = [_clean_text(s) for s in it.stripped_strings if _clean_text(s)]
                 if lines:
                     skill_name = lines[0]
-                    if not re.search(
-                        r"^\d+\s+endorsements?$", skill_name, re.IGNORECASE
-                    ) and not re.search(r"^show all\b", skill_name, re.IGNORECASE):
+                    if _is_valid_skill(skill_name) and skill_name not in skill_list:
                         skill_list.append(skill_name)
             if skill_list:
                 skills = skill_list
             continue
 
-        # 4e. Route any other visible section into other_sections
+        # 4e. Check Certifications
+        if (
+            _matches_any_pattern(heading, CERTIFICATIONS_PATTERNS)
+            or sec_id == KNOWN_SECTION_IDS["certifications"]
+        ):
+            cert_items = [_parse_certification_item(it) for it in items]
+            valid_certs = [c for c in cert_items if c.name or c.raw]
+            if valid_certs:
+                certifications = valid_certs
+                continue
+
+        # 4f. Check Projects
+        if (
+            _matches_any_pattern(heading, PROJECTS_PATTERNS)
+            or sec_id == KNOWN_SECTION_IDS["projects"]
+        ):
+            proj_items = [_parse_project_item(it) for it in items]
+            valid_projs = [p for p in proj_items if p.title or p.raw]
+            if valid_projs:
+                projects = valid_projs
+                continue
+
+        # 4g. Check Languages
+        if (
+            _matches_any_pattern(heading, LANGUAGES_PATTERNS)
+            or sec_id == KNOWN_SECTION_IDS["languages"]
+        ):
+            lang_items = [_parse_language_item(it) for it in items]
+            valid_langs = [item for item in lang_items if item.name or item.raw]
+            if valid_langs:
+                languages = valid_langs
+                continue
+
+        # 4h. Route any other visible section into other_sections
         parsed_other = _parse_other_section(sec, heading or "Additional Information")
         if parsed_other:
             other_sections.append(parsed_other)
@@ -748,6 +1138,11 @@ def parse_profile(
     # --------------------------------------------------------------------------
     # 5. Construct Profile Model
     # --------------------------------------------------------------------------
+    name = _clean_text(name) if name else None
+    headline = _clean_text(headline) if headline else None
+    location = _clean_text(location) if location else None
+    about = _clean_text(about) if about else None
+
     profile = Profile(
         name=name,
         headline=headline,
@@ -756,6 +1151,9 @@ def parse_profile(
         experience=experience,
         education=education,
         skills=skills,
+        certifications=certifications,
+        projects=projects,
+        languages=languages,
     )
 
     # --------------------------------------------------------------------------
@@ -766,6 +1164,8 @@ def parse_profile(
     for field in important_fields:
         val = profile_data.get(field)
         if val is None or (isinstance(val, list) and len(val) == 0):
+            missing_fields.append(field)
+        elif isinstance(val, str) and _is_placeholder_value(val):
             missing_fields.append(field)
 
     # --------------------------------------------------------------------------
@@ -778,6 +1178,12 @@ def parse_profile(
         captured_pieces.extend(item.raw for item in education)
     if skills:
         captured_pieces.extend(skills)
+    if certifications:
+        captured_pieces.extend(item.raw for item in certifications if item.raw)
+    if projects:
+        captured_pieces.extend(item.raw for item in projects if item.raw)
+    if languages:
+        captured_pieces.extend(item.raw for item in languages if item.raw)
     captured_pieces.extend(sec.text for sec in other_sections)
 
     total_captured_len = sum(len(p) for p in captured_pieces if p)
@@ -800,6 +1206,9 @@ def parse_profile(
         or experience
         or education
         or skills
+        or certifications
+        or projects
+        or languages
     )
     final_status: Status = status
     final_reason: Reason | None = Reason(reason) if reason else None

@@ -163,8 +163,58 @@ class PlaywrightFetcher:
                         self.max_scroll_steps,
                     )
 
+                # --------------------------------------------------------------
+                # Systematic Content Expansion:
+                # Clicks all inline '...see more' / 'show more' controls to un-truncate
+                # role descriptions, About text, and project details in place.
+                # --------------------------------------------------------------
+                try:
+                    expanded_count = page.evaluate("""() => {
+                        const buttons = Array.from(document.querySelectorAll(
+                            'button.inline-show-more-text__button, ' +
+                            'button.show-more-less-html__button, ' +
+                            'button[aria-expanded="false"], ' +
+                            'button, [role="button"]'
+                        ));
+                        let clicked = 0;
+                        for (const b of buttons) {
+                            const text = (b.innerText || b.textContent || "").trim().toLowerCase();
+                            const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+                            const cls = (b.className || "").toString().toLowerCase();
+
+                            const isInlineExpand =
+                                cls.includes("show-more") ||
+                                cls.includes("see-more") ||
+                                text === "...more" ||
+                                text === "... more" ||
+                                text === "see more" ||
+                                text === "show more" ||
+                                text === "more" ||
+                                aria.includes("see more") ||
+                                aria.includes("show more");
+
+                            const isNavigation = b.closest('a') !== null
+                                || text.includes("show all")
+                                || (b.getAttribute('href')
+                                    && b.getAttribute('href').startsWith('/'));
+
+                            if (isInlineExpand && !isNavigation && b.offsetParent !== null) {
+                                try {
+                                    b.click();
+                                    clicked++;
+                                } catch (e) {}
+                            }
+                        }
+                        return clicked;
+                    }""")
+                    if expanded_count:
+                        logger.debug("Expanded %d inline text controls", expanded_count)
+                        page.wait_for_timeout(400)
+                except Exception as exp_err:
+                    logger.debug("Could not expand inline controls: %s", exp_err)
+
                 # Settle delay for DOM mutations to finish rendering
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(600)
 
                 current_url = page.url
                 html = page.content()

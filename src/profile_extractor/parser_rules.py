@@ -40,6 +40,19 @@ SKILLS_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"^featured skills\b", re.IGNORECASE),
 ]
 
+CERTIFICATIONS_PATTERNS: Final[list[re.Pattern[str]]] = [
+    re.compile(r"^licenses?\s*(?:&|and)?\s*certifications?\b", re.IGNORECASE),
+    re.compile(r"^certifications?\b", re.IGNORECASE),
+]
+
+PROJECTS_PATTERNS: Final[list[re.Pattern[str]]] = [
+    re.compile(r"^projects?\b", re.IGNORECASE),
+]
+
+LANGUAGES_PATTERNS: Final[list[re.Pattern[str]]] = [
+    re.compile(r"^languages?\b", re.IGNORECASE),
+]
+
 # ------------------------------------------------------------------------------
 # Noise Filter Patterns
 # Excludes sidebar widgets, recommendations, and notification badges
@@ -69,12 +82,63 @@ NOISE_LINE_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"^request\s+services\b", re.IGNORECASE),
 ]
 
+# UI badges and metadata that must never be treated as descriptions
+UI_BADGE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:LinkedIn helped me get this job|Show credential|See credential"
+    r"|Promoted|Verified certificate)",
+    re.IGNORECASE,
+)
+
+# Skills chip in experience entries (e.g., "Node.js, MongoDB and +2 skills")
+SKILLS_CHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:\band\s+\+\d+\s+skills?\b|^\s*Skills\s*:|^\s*[\u00b7·]\s*Skills\s*:|\+\d+\s+skills?$)",
+    re.IGNORECASE,
+)
+
+# Academic grade / honors pattern in education (e.g., "CGPA: 7.18", "Grade: First Class")
+GRADE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:CGPA|GPA|Grade|Percentage|Score)\b[:\s]*[\d.]+",
+    re.IGNORECASE,
+)
+
+# Extracurricular activities pattern in education
+ACTIVITIES_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Activities and societies\s*:",
+    re.IGNORECASE,
+)
+
+# Workplace arrangement types (e.g. "On-site", "Hybrid", "Remote")
+WORKPLACE_TYPES: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:on-site|hybrid|remote)\b",
+    re.IGNORECASE,
+)
+
+# Geographic location line pattern (e.g. "Munich, Bavaria, Germany", "Tokyo, Japan · Hybrid")
+LOCATION_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^(?:(?:\w[\w\s\.\-']+,)+\s*[\w\s\.\-']+"
+    r"|[A-Z][a-zA-Z\s\.\-']+(?:Area|Region|City|District|County|State)"
+    r"|(?:on-site|hybrid|remote))"
+    r"(?:\s*[\u00b7·]\s*(?:on-site|hybrid|remote))?$",
+    re.IGNORECASE,
+)
+
+# Placeholder values that indicate absent or default content rather than usable text
+PLACEHOLDER_REGEX: Final[re.Pattern[str]] = re.compile(
+    r"^[\s\-_—–\.\?\!/\\\|\*#]+$"
+    r"|^(?:n/a|na|none|null|nil|undefined|unknown|not provided"
+    r"|not specified|\(empty\)|no headline)$",
+    re.IGNORECASE,
+)
+
 # Stable section IDs used in LinkedIn DOM
 KNOWN_SECTION_IDS: Final[dict[str, str]] = {
     "about": "about",
     "experience": "experience",
     "education": "education",
     "skills": "skills",
+    "certifications": "licenses_and_certifications",
+    "projects": "projects",
+    "languages": "languages",
 }
 
 # Non-visible and UI junk elements stripped from the DOM before text parsing

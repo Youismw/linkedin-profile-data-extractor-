@@ -64,7 +64,8 @@ class ExperienceItem(BaseModel):
         company: Company name or organization.
         dates: Employment timeframe string (e.g., 'Sep 2023 - Present · 1 yr').
         location: Work location and modality (e.g., 'Noida, India · Hybrid').
-        description: Role description, achievements, or project details.
+        description: Genuine role description, narrative, or achievements.
+        skills_preview: Associated skills chip (e.g. 'Node.js, MongoDB and +2 skills').
         raw: Full unparsed text string preserved for audit integrity.
     """
 
@@ -75,7 +76,7 @@ class ExperienceItem(BaseModel):
     dates: str | None = None
     location: str | None = None
     description: str | None = None
-    # 'raw' guarantees no information loss even if DOM parsing heuristic slips
+    skills_preview: str | None = None
     raw: str = ""
 
 
@@ -86,6 +87,8 @@ class EducationItem(BaseModel):
         school: College, university, or institution name.
         degree: Degree, diploma, or field of study.
         dates: Enrollment period or graduation year.
+        grade: Academic grade, CGPA, or honors (e.g., 'CGPA: 7.18').
+        activities: Clubs, societies, and extracurricular activities.
         raw: Full unparsed text string preserved for audit integrity.
     """
 
@@ -94,15 +97,78 @@ class EducationItem(BaseModel):
     school: str | None = None
     degree: str | None = None
     dates: str | None = None
-    # 'raw' preserves exact honors, grades, and activities
+    grade: str | None = None
+    activities: str | None = None
+    raw: str = ""
+
+
+class CertificationItem(BaseModel):
+    """Structured representation of a professional license or certification.
+
+    Attributes:
+        name: Name of the certificate or credential (e.g. 'AWS Solutions Architect').
+        issuer: Issuing organization or authority (e.g. 'Amazon Web Services').
+        issue_date: Date issued (e.g. 'Issued Sep 2023').
+        expiration_date: Expiration date or 'No Expiration Date'.
+        credential_id: License / Credential identification code.
+        credential_url: Link to verify the certificate online.
+        raw: Full unparsed text string preserved for audit integrity.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None
+    issuer: str | None = None
+    issue_date: str | None = None
+    expiration_date: str | None = None
+    credential_id: str | None = None
+    credential_url: str | None = None
+    raw: str = ""
+
+
+class ProjectItem(BaseModel):
+    """Structured representation of an academic, personal, or professional project.
+
+    Attributes:
+        title: Project title or name.
+        dates: Project timeline or completion date.
+        description: Narrative description of the project and implementation.
+        url: Link to project repository or live deployment.
+        skills: Associated skills and technologies used.
+        raw: Full unparsed text string preserved for audit integrity.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str | None = None
+    dates: str | None = None
+    description: str | None = None
+    url: str | None = None
+    skills: list[str] | None = None
+    raw: str = ""
+
+
+class LanguageItem(BaseModel):
+    """Structured representation of a spoken/written language proficiency.
+
+    Attributes:
+        name: Language name (e.g. 'English', 'German').
+        proficiency: Proficiency level (e.g. 'Full professional proficiency').
+        raw: Full unparsed text string preserved for audit integrity.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None
+    proficiency: str | None = None
     raw: str = ""
 
 
 class OtherSection(BaseModel):
     """Unmapped or miscellaneous profile section captured from the DOM.
 
-    Captures auxiliary sections like 'Licenses & Certifications', 'Projects',
-    'Volunteering', 'Patents', 'Languages', or 'Activity' without data loss.
+    Captures auxiliary sections like 'Volunteering', 'Patents', 'Publications',
+    or 'Activity' without data loss.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -127,6 +193,9 @@ class Profile(BaseModel):
     experience: list[ExperienceItem] | None = None
     education: list[EducationItem] | None = None
     skills: list[str] | None = None
+    certifications: list[CertificationItem] | None = None
+    projects: list[ProjectItem] | None = None
+    languages: list[LanguageItem] | None = None
 
 
 # ==============================================================================
