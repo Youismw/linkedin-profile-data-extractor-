@@ -747,6 +747,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # Explorer popup errors must never prevent returning success code
                 pass
 
+            if summary.rows_valid > 0 and summary.ok_count == 0:
+                print(
+                    "\n[WARNING] Pipeline completed with 0 successful profiles extracted. "
+                    "All candidate profiles were unreachable or blocked.",
+                    file=sys.stderr,
+                )
+                return 2
+
             return 0
         except Exception as e:
             print(f"Error executing pipeline: {e}", file=sys.stderr)

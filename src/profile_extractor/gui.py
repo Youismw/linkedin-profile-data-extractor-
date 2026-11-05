@@ -603,6 +603,9 @@ class ExtractorApp:
         cmd.extend(["--aboutwait", str(about_wait)])
         cmd.extend(["--polite", f"{polite_delay:.1f}"])
 
+        # Reset per-run tracking flags
+        self._last_run_had_zero_ok = False
+
         # Update UI state
         self._set_running_state(True)
         self.status_var.set("Running Pipeline...")
@@ -681,6 +684,8 @@ class ExtractorApp:
             for raw_line in iter(proc.stdout.readline, ""):
                 if not raw_line:
                     break
+                if "0 OK" in raw_line and "Execution finished:" in raw_line:
+                    self._last_run_had_zero_ok = True
                 # Schedule safe UI update on main Tkinter thread
                 self.root.after(0, self._log_line, raw_line)
         except Exception as e:
@@ -700,10 +705,21 @@ class ExtractorApp:
         self._set_running_state(False)
         self.process = None
 
-        if returncode == 0:
+        had_zero_ok = getattr(self, "_last_run_had_zero_ok", False)
+
+        if returncode == 0 and not had_zero_ok:
             self.status_var.set("Completed Successfully")
             self.status_display.config(foreground="#4ec9b0")
             self._log_line("\n[SUCCESS] Extraction run finished cleanly.\n", tag="success")
+        elif returncode == 2 or had_zero_ok:
+            self.status_var.set("0 Profiles Extracted")
+            self.status_display.config(foreground="#ce9178")
+            self._log_line(
+                "\n[WARNING] Pipeline finished but 0 profiles were successfully extracted.\n"
+                "All candidate profiles were unreachable or blocked. Check log above.\n"
+                "If blocked or session expired, click 'LinkedIn Login' to refresh authentication.\n",
+                tag="warning",
+            )
         else:
             self.status_var.set(f"Finished (Exit Code {returncode})")
             self.status_display.config(foreground="#f44747")

@@ -135,6 +135,10 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
                 if has_auth and (on_app_page or not_on_auth_gate):
                     print("\n[OK] Detected active LinkedIn login session in browser!")
                     page.wait_for_timeout(3000)  # Settle companion cookies
+                    try:
+                        context.storage_state(path=str(target_path))
+                    except Exception as state_err:
+                        logger.debug("Intermediate state capture: %s", state_err)
                     break
             except Exception:
                 pass
@@ -142,19 +146,20 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
             page.wait_for_timeout(1000)
 
         # Capture complete session cookies and localStorage before closing browser
-        if not page.is_closed():
-            try:
+        try:
+            if not target_path.is_file() or is_session_expired(target_path):
                 context.storage_state(path=str(target_path))
-            except Exception as err:
+        except Exception as err:
+            if not target_path.is_file():
                 logger.error("Failed to capture session state: %s", err)
                 raise RuntimeError(
                     f"Could not save session. Ensure browser was not prematurely closed: {err}"
                 ) from err
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     # Verify that an actual authenticated session cookie ('li_at') was captured
     if is_session_expired(target_path):
