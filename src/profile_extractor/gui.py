@@ -72,8 +72,8 @@ class ExtractorApp:
         """
         self.root = root
         self.root.title("LinkedIn Candidate Profile Extractor - Assistant")
-        self.root.geometry("820x760")
-        self.root.minsize(700, 620)
+        self.root.geometry("840x840")
+        self.root.minsize(740, 700)
 
         # Apply native Windows look-and-feel if available
         self.style = ttk.Style()
@@ -113,6 +113,8 @@ class ExtractorApp:
         # Numeric Sliders
         self.scroll_steps_var = tk.IntVar(value=25)     # Default 25 (0 to 100)
         self.step_time_var = tk.IntVar(value=250)       # Default 250 ms (50 to 2000)
+        self.about_wait_var = tk.IntVar(value=1000)     # Default 1000 ms (0 to 5000)
+        self.polite_delay_var = tk.DoubleVar(value=1.5) # Default 1.5 s (0.0 to 10.0)
 
         # Status text
         self.status_var = tk.StringVar(value="Ready")
@@ -125,14 +127,14 @@ class ExtractorApp:
 
     def _build_layout(self) -> None:
         """Construct the widget hierarchy within the root window."""
-        main_container = ttk.Frame(self.root, padding=14)
+        main_container = ttk.Frame(self.root, padding=12)
         main_container.pack(fill=tk.BOTH, expand=True)
 
         # ----------------------------------------------------------------------
         # 1. Header Banner
         # ----------------------------------------------------------------------
         header_frame = ttk.Frame(main_container)
-        header_frame.pack(fill=tk.X, pady=(0, 10))
+        header_frame.pack(fill=tk.X, pady=(0, 8))
 
         title_lbl = ttk.Label(
             header_frame,
@@ -148,22 +150,22 @@ class ExtractorApp:
         )
         subtitle_lbl.pack(anchor=tk.W, pady=(2, 0))
 
-        ttk.Separator(main_container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(4, 10))
+        ttk.Separator(main_container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(3, 8))
 
         # ----------------------------------------------------------------------
         # 2. File & Directory Locations Frame
         # ----------------------------------------------------------------------
-        paths_frame = ttk.LabelFrame(main_container, text=" File & Folder Locations ", padding=10)
-        paths_frame.pack(fill=tk.X, pady=(0, 10))
+        paths_frame = ttk.LabelFrame(main_container, text=" File & Folder Locations ", padding=8)
+        paths_frame.pack(fill=tk.X, pady=(0, 8))
 
         # Candidate Spreadsheet Row
         ttk.Label(paths_frame, text="Candidate Spreadsheet (.xlsx, .csv):").grid(
-            row=0, column=0, sticky=tk.W, padx=(0, 8), pady=4
+            row=0, column=0, sticky=tk.W, padx=(0, 8), pady=3
         )
         input_entry = ttk.Entry(paths_frame, textvariable=self.input_var, width=54)
-        input_entry.grid(row=0, column=1, sticky=tk.EW, padx=(0, 8), pady=4)
+        input_entry.grid(row=0, column=1, sticky=tk.EW, padx=(0, 8), pady=3)
         browse_input_btn = ttk.Button(paths_frame, text="Browse...", command=self._browse_input)
-        browse_input_btn.grid(row=0, column=2, pady=4)
+        browse_input_btn.grid(row=0, column=2, pady=3)
 
         # Input Explanation Hint
         input_hint = ttk.Label(
@@ -171,17 +173,17 @@ class ExtractorApp:
             text="Select an Excel or CSV file containing candidate LinkedIn profile URLs.",
             style="Hint.TLabel",
         )
-        input_hint.grid(row=1, column=1, sticky=tk.W, pady=(0, 6))
+        input_hint.grid(row=1, column=1, sticky=tk.W, pady=(0, 4))
 
         # Output Directory Row
         ttk.Label(paths_frame, text="Output Directory:").grid(
-            row=2, column=0, sticky=tk.W, padx=(0, 8), pady=4
+            row=2, column=0, sticky=tk.W, padx=(0, 8), pady=3
         )
         output_entry = ttk.Entry(paths_frame, textvariable=self.output_var, width=54)
-        output_entry.grid(row=2, column=1, sticky=tk.EW, padx=(0, 8), pady=4)
+        output_entry.grid(row=2, column=1, sticky=tk.EW, padx=(0, 8), pady=3)
 
         btn_box = ttk.Frame(paths_frame)
-        btn_box.grid(row=2, column=2, sticky=tk.W, pady=4)
+        btn_box.grid(row=2, column=2, sticky=tk.W, pady=3)
         browse_output_btn = ttk.Button(btn_box, text="Browse...", command=self._browse_output)
         browse_output_btn.pack(side=tk.LEFT, padx=(0, 4))
         open_output_btn = ttk.Button(btn_box, text="Open Folder", command=self._open_output_dir)
@@ -201,9 +203,9 @@ class ExtractorApp:
         # 3. Flare Settings & Speed Controls Frame
         # ----------------------------------------------------------------------
         flares_frame = ttk.LabelFrame(
-            main_container, text=" Crawler Flares & Speed Controls ", padding=10
+            main_container, text=" Crawler Flares & Speed Controls ", padding=8
         )
-        flares_frame.pack(fill=tk.X, pady=(0, 10))
+        flares_frame.pack(fill=tk.X, pady=(0, 8))
 
         # Left Column: Checkbox Toggles
         left_col = ttk.Frame(flares_frame)
@@ -281,14 +283,14 @@ class ExtractorApp:
             orient=tk.HORIZONTAL,
             command=self._on_scroll_slider_change,
         )
-        scroll_scale.pack(fill=tk.X, pady=(2, 2))
+        scroll_scale.pack(fill=tk.X, pady=(1, 1))
 
         ttk.Label(
             right_col,
             text="25 steps gets ~80% data; 40 steps gets ~90%+. Less = faster, more = fuller.",
             style="Hint.TLabel",
-            wraplength=340,
-        ).pack(anchor=tk.W, pady=(0, 10))
+            wraplength=350,
+        ).pack(anchor=tk.W, pady=(0, 6))
 
         # Flare: Step Time Delay (--steptime)
         self.step_time_lbl = ttk.Label(
@@ -306,13 +308,69 @@ class ExtractorApp:
             orient=tk.HORIZONTAL,
             command=self._on_steptime_slider_change,
         )
-        step_scale.pack(fill=tk.X, pady=(2, 2))
+        step_scale.pack(fill=tk.X, pady=(1, 1))
 
         ttk.Label(
             right_col,
             text="Delay between scrolls. Faster vs safer. Keep >= 150ms to avoid bot rate limits.",
             style="Hint.TLabel",
-            wraplength=340,
+            wraplength=350,
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        # Flare: About Section Wait (--aboutwait)
+        self.about_wait_lbl = ttk.Label(
+            right_col,
+            text=f"About Section Ready Wait: {self.about_wait_var.get()} ms",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.about_wait_lbl.pack(anchor=tk.W)
+
+        about_scale = ttk.Scale(
+            right_col,
+            from_=0,
+            to=5000,
+            variable=self.about_wait_var,
+            orient=tk.HORIZONTAL,
+            command=self._on_aboutwait_slider_change,
+        )
+        about_scale.pack(fill=tk.X, pady=(1, 1))
+
+        ttk.Label(
+            right_col,
+            text=(
+                "Max wait for About card to hydrate. "
+                "Stops immediately once loaded. (Default: 1000ms)"
+            ),
+            style="Hint.TLabel",
+            wraplength=350,
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        # Flare: Polite Delay Between Profiles (--polite)
+        self.polite_delay_lbl = ttk.Label(
+            right_col,
+            text=f"Polite Delay Between Profiles: {self.polite_delay_var.get():.1f} s",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.polite_delay_lbl.pack(anchor=tk.W)
+
+        polite_scale = ttk.Scale(
+            right_col,
+            from_=0.0,
+            to=10.0,
+            variable=self.polite_delay_var,
+            orient=tk.HORIZONTAL,
+            command=self._on_polite_slider_change,
+        )
+        polite_scale.pack(fill=tk.X, pady=(1, 1))
+
+        ttk.Label(
+            right_col,
+            text=(
+                "Pause between visiting candidates. "
+                "Lower = faster batch, higher = safer against bot tracking."
+            ),
+            style="Hint.TLabel",
+            wraplength=350,
         ).pack(anchor=tk.W)
 
         flares_frame.columnconfigure(0, weight=1)
@@ -322,7 +380,7 @@ class ExtractorApp:
         # 4. Action Toolbar & Status Bar
         # ----------------------------------------------------------------------
         action_frame = ttk.Frame(main_container)
-        action_frame.pack(fill=tk.X, pady=(0, 10))
+        action_frame.pack(fill=tk.X, pady=(0, 8))
 
         self.start_btn = ttk.Button(
             action_frame,
@@ -410,6 +468,16 @@ class ExtractorApp:
         """Update label text when step delay slider moves."""
         ms = int(float(val))
         self.step_time_lbl.config(text=f"Scroll Step Delay: {ms} ms")
+
+    def _on_aboutwait_slider_change(self, val: str) -> None:
+        """Update label text when About wait slider moves."""
+        ms = int(float(val))
+        self.about_wait_lbl.config(text=f"About Section Ready Wait: {ms} ms")
+
+    def _on_polite_slider_change(self, val: str) -> None:
+        """Update label text when polite delay slider moves."""
+        sec = float(val)
+        self.polite_delay_lbl.config(text=f"Polite Delay Between Profiles: {sec:.1f} s")
 
     def _browse_input(self) -> None:
         """Open file picker dialog for candidate spreadsheet."""
@@ -525,10 +593,15 @@ class ExtractorApp:
         if self.prune_var.get():
             cmd.append("--prune")
 
-        scroll_steps = (self.scroll_steps_var.get())
-        step_time = (self.step_time_var.get())
+        scroll_steps = int(self.scroll_steps_var.get())
+        step_time = int(self.step_time_var.get())
+        about_wait = int(self.about_wait_var.get())
+        polite_delay = float(self.polite_delay_var.get())
+
         cmd.extend(["--scrollsteps", str(scroll_steps)])
         cmd.extend(["--steptime", str(step_time)])
+        cmd.extend(["--aboutwait", str(about_wait)])
+        cmd.extend(["--polite", f"{polite_delay:.1f}"])
 
         # Update UI state
         self._set_running_state(True)

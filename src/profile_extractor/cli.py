@@ -304,6 +304,23 @@ def build_parser() -> argparse.ArgumentParser:
             "Pros: lower = faster runtime. Cons: too low = dynamic sections may not load in time."
         ),
     )
+    run_parser.add_argument(
+        "--aboutwait",
+        "--about-wait",
+        dest="about_wait",
+        type=int,
+        default=None,
+        help="Maximum wait time in ms for About section to hydrate (0 to 30000, default: 1000).",
+    )
+    run_parser.add_argument(
+        "--polite",
+        "--delay",
+        "--polite-wait",
+        dest="polite_delay",
+        type=float,
+        default=None,
+        help="Target polite delay between profiles in seconds (0.0 to 60.0, default: 1.5).",
+    )
 
     # --------------------------------------------------------------------------
     # Subcommand: 'login' (Interactive session creation)
@@ -638,6 +655,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 1
             overrides["scroll_step_delay_ms"] = args.step_time
+        if getattr(args, "about_wait", None) is not None:
+            if not (0 <= args.about_wait <= 30000):
+                print(
+                    f"Error: --aboutwait must be between 0 and 30000 ms (got {args.about_wait})",
+                    file=sys.stderr,
+                )
+                return 1
+            overrides["about_wait_ms"] = args.about_wait
+        if getattr(args, "polite_delay", None) is not None:
+            if not (0.0 <= args.polite_delay <= 60.0):
+                print(
+                    f"Error: --polite must be between 0.0 and 60.0s (got {args.polite_delay})",
+                    file=sys.stderr,
+                )
+                return 1
+            overrides["polite_delay"] = args.polite_delay
 
         # Load complete runtime configuration with all overrides merged
         config = load_config(args.config_file, overrides=overrides)
@@ -672,6 +705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout_seconds=config.page_timeout_seconds,
                 max_scroll_steps=config.scroll_steps,
                 scroll_step_delay_ms=config.scroll_step_delay_ms,
+                about_wait_ms=config.about_wait_ms,
             )
 
         # ----------------------------------------------------------------------

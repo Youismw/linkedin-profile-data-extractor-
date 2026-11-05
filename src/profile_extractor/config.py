@@ -36,9 +36,16 @@ class ExtractorConfig(BaseModel):
         important_fields: Core fields evaluated for missingness in Meta block.
         delay_seconds_min: Minimum jitter delay between consecutive profile visits.
         delay_seconds_max: Maximum jitter delay between consecutive profile visits.
+        polite_delay: Optional target polite wait between profiles (auto-sets min/max bounds).
         page_timeout_seconds: Hard deadline per page before marking TIMEOUT.
         max_profiles: Cap on valid profiles to process (None = unlimited).
         headless: Whether Chromium runs invisibly or with visible window.
+        deep_details: Follow subpages for skills, certs, experience, and education.
+        disextra: Disables supplemental discovery crawls (activity, interests).
+        scroll_steps: Number of scroll steps per page (0 to 100).
+        scroll_step_delay_ms: Pause between scroll increments in ms.
+        about_wait_ms: Maximum wait time in ms for About section and page shell to hydrate.
+        prune_stale: Whether to remove unreferenced profiles from output dir.
         stop_on_block: Halts pipeline immediately upon bot challenge/CAPTCHA.
         log_level: Severity threshold for logging (e.g., 'INFO', 'DEBUG').
     """
@@ -61,6 +68,7 @@ class ExtractorConfig(BaseModel):
     )
     delay_seconds_min: float = Field(default=1.0, ge=0.0)
     delay_seconds_max: float = Field(default=2.0, ge=0.0)
+    polite_delay: float | None = Field(default=None, ge=0.0, le=60.0)
     page_timeout_seconds: float = Field(default=30.0, gt=0.0)
     max_profiles: int | None = Field(default=None)
     headless: bool = Field(default=True)
@@ -68,6 +76,7 @@ class ExtractorConfig(BaseModel):
     disextra: bool = Field(default=False)
     scroll_steps: int = Field(default=25, ge=0, le=100)
     scroll_step_delay_ms: int = Field(default=250, ge=50, le=5000)
+    about_wait_ms: int = Field(default=1000, ge=0, le=30000)
     prune_stale: bool = Field(default=False)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")
@@ -103,7 +112,13 @@ class ExtractorConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_delay_bounds(self) -> "ExtractorConfig":
-        """Enforce delay bounds: minimum delay must not exceed maximum delay."""
+        """Enforce delay bounds and harmonize polite_delay if provided."""
+        if self.polite_delay is not None:
+            self.delay_seconds_min = max(0.0, round(self.polite_delay * 0.7, 1))
+            self.delay_seconds_max = round(
+                max(self.delay_seconds_min + 0.2, self.polite_delay * 1.3), 1
+            )
+
         if self.delay_seconds_min > self.delay_seconds_max:
             raise ValueError(
                 f"delay_seconds_min ({self.delay_seconds_min}) cannot be greater than "
@@ -155,6 +170,16 @@ def load_config(
         data["scroll_step_delay_ms"] = data.pop("steptime")
     if "step_time" in data and "scroll_step_delay_ms" not in data:
         data["scroll_step_delay_ms"] = data.pop("step_time")
+    if "aboutwait" in data and "about_wait_ms" not in data:
+        data["about_wait_ms"] = data.pop("aboutwait")
+    if "about_wait" in data and "about_wait_ms" not in data:
+        data["about_wait_ms"] = data.pop("about_wait")
+    if "polite" in data and "polite_delay" not in data:
+        data["polite_delay"] = data.pop("polite")
+    if "polite_delay" in data and "delay_seconds_min" not in data:
+        val = float(data["polite_delay"])
+        data["delay_seconds_min"] = max(0.0, round(val * 0.7, 1))
+        data["delay_seconds_max"] = round(max(val * 0.7 + 0.2, val * 1.3), 1)
 
     # 3. Validate against Pydantic schema
     return ExtractorConfig.model_validate(data)

@@ -73,6 +73,8 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 | `.\run.bat --disextra` | `.\run --disextra` | **Fast Mode (Skip Extras)**: Skips supplemental discovery crawls (`/recent-activity/` and `/details/interests/`) to cut extraction time from ~2 minutes per profile down to ~15-20 seconds while retaining full profile, skills, experience, and education. |
 | `.\run.bat --scrollsteps 25` | `.\run --scrollsteps <x>` | **Scroll Depth Limit**: Sets maximum progressive scroll steps (0 to 100, default: `25`). **Trade-off**: More steps = more time, fuller data; fewer steps = faster but emptier. (~25 scrolls captures ~80% of data, ~40 scrolls captures ~90%). |
 | `.\run.bat --steptime 250` | `.\run --steptime <ms>` | **Scroll Step Pause**: Delay between scroll increments in milliseconds (default: `250`). **Pros**: Lower time (e.g. 150ms) runs significantly faster. **Cons**: If set too low, dynamic lazy-loaded sections won't load in time before scrolling past. |
+| `.\run.bat --aboutwait 1000` | `.\run --aboutwait <ms>` | **About Section Ready Wait**: Maximum wait time in milliseconds for the candidate About card and shell to hydrate before progressive scrolling begins (default: `1000`). Stops waiting immediately once loaded. |
+| `.\run.bat --polite 1.5` | `.\run --polite <sec>` | **Polite Delay Between Profiles**: Target delay between visiting consecutive candidate profiles in seconds (default: `1.5s`). Paces requests to mimic natural human browsing and avoid bot detection. |
 | `.\run.bat --max-profiles 3` | `.\run --max-profiles 3` | **Profile Cap**: Stops processing after processing the specified number of valid profiles; unvisited valid profiles are reconciled in `not_processed_count`. |
 | `.\run.bat login` | `python -m profile_extractor login` | **Stand-alone Login Helper**: Explicitly opens a visible Chromium browser to `https://www.linkedin.com/login` and exports active cookies to `.auth/state.json`. |
 | `.\run.bat logout` | `.\run logout` / `.\run clean-session` | **Clean Session**: Manually clears saved `.auth/state.json` so future runs prompt for login (pass `--all` to also reset remembered paths). |
@@ -462,6 +464,8 @@ The tool includes a lightweight, native graphical user interface (`gui.bat` / `r
   * **Disable Supplemental Feeds (`--disextra`)**: *"Skips /recent-activity/ and /details/interests/ for 3x–4x faster run. Recommended for resume extraction."*
   * **Scroll Depth Steps (`--scrollsteps`)**: Slider (0 to 100, default `25`). *"25 steps gets ~80% of lazy DOM; 40 steps gets ~90%+. Fewer steps = faster, more steps = fuller data."*
   * **Scroll Step Delay (`--steptime`)**: Slider (50 to 1000 ms, default `250`). *"Delay between scrolls. Faster vs safer. Keep >= 150ms to avoid bot rate limits."*
+  * **About Section Ready Wait (`--aboutwait`)**: Slider (0 to 5000 ms, default `1000`). *"Max wait for About card to hydrate. Stops immediately once loaded."*
+  * **Polite Delay Between Profiles (`--polite`)**: Slider (0.0 to 10.0 s, default `1.5`). *"Pause between visiting candidates. Lower = faster batch, higher = safer against bot tracking."*
   * **Single-Page Fast Mode (`--fast` / `--no-deep`)**: *"Extracts top card only without visiting deep subpages (~5s/profile)."*
   * **Show Chromium Browser (`--visible`)**: *"Opens browser visibly so you can watch live page navigation."*
   * **Prune Old Profiles (`--prune`)**: *"Clears old JSON profiles from output directory before starting."*

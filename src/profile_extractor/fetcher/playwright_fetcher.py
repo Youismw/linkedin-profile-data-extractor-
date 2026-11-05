@@ -303,6 +303,7 @@ class PlaywrightFetcher:
         save_raw_html_dir: Path | str | None = None,
         max_scroll_steps: int = 25,
         scroll_step_delay_ms: int = 250,
+        about_wait_ms: int = 1000,
         interactive_relogin: bool = True,
         block_images: bool = True,
     ) -> None:
@@ -312,6 +313,7 @@ class PlaywrightFetcher:
         self.save_raw_html_dir = Path(save_raw_html_dir) if save_raw_html_dir else None
         self.max_scroll_steps = max_scroll_steps
         self.scroll_step_delay_ms = scroll_step_delay_ms
+        self.about_wait_ms = about_wait_ms
         self.interactive_relogin = interactive_relogin
         self.block_images = block_images
         self._allow_relogin = True
@@ -416,24 +418,26 @@ class PlaywrightFetcher:
                                     || (heading && mainText.length > 40)
                                     || (mainText.length > 100);
                             }""",
-                            timeout=min(self.timeout_ms, 1000),
+                            timeout=min(self.timeout_ms, self.about_wait_ms),
                         )
                     except PlaywrightTimeoutError:
                         logger.debug(
-                            "Profile shell did not reach the expected ready state within 1s; "
-                            "continuing with incremental capture."
+                            "Profile shell did not reach the expected ready state within %.1fs; "
+                            "continuing with incremental capture.",
+                            self.about_wait_ms / 1000.0,
                         )
 
-                    # Wait specifically for meaningful About content to appear (max 1s).
-                    # Stops waiting immediately once it appears; if not within 1s, continues normally.
+                    # Wait specifically for meaningful About content to appear
+                    # Stops waiting immediately once it appears; if not within about_wait_ms, continues normally.
                     try:
                         page.wait_for_function(
                             _WAIT_FOR_MEANINGFUL_ABOUT_JS,
-                            timeout=min(self.timeout_ms, 1000),
+                            timeout=min(self.timeout_ms, self.about_wait_ms),
                         )
                     except PlaywrightTimeoutError:
                         logger.debug(
-                            "About section did not reach ready state within 1s; continuing with capture."
+                            "About section did not reach ready state within %.1fs; continuing with capture.",
+                            self.about_wait_ms / 1000.0,
                         )
 
                 # Capture profile cards before the first scroll. We also capture after

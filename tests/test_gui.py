@@ -45,6 +45,8 @@ def test_gui_app_initialization_and_slider_events() -> None:
         assert app.prune_var.get() is False
         assert app.scroll_steps_var.get() == 25
         assert app.step_time_var.get() == 250
+        assert app.about_wait_var.get() == 1000
+        assert app.polite_delay_var.get() == 1.5
         assert app.status_var.get() == "Ready"
 
         # Test slider change callbacks
@@ -53,6 +55,12 @@ def test_gui_app_initialization_and_slider_events() -> None:
 
         app._on_steptime_slider_change("300")
         assert "300 ms" in app.step_time_lbl.cget("text")
+
+        app._on_aboutwait_slider_change("2500")
+        assert "2500 ms" in app.about_wait_lbl.cget("text")
+
+        app._on_polite_slider_change("3.5")
+        assert "3.5 s" in app.polite_delay_lbl.cget("text")
 
         # Test logging helper
         app._log_line("[INFO] Testing log output\n")
