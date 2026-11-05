@@ -39,6 +39,7 @@ from tkinter.scrolledtext import ScrolledText
 
 # Path to persistent run state file (shared with CLI)
 STATE_FILE = Path(".run_state.json")
+AUTH_STATE_FILE = Path(".auth/state.json")
 
 
 def _load_run_state() -> dict[str, str]:
@@ -404,6 +405,13 @@ class ExtractorApp:
         )
         self.login_btn.pack(side=tk.LEFT, padx=(0, 8), ipadx=4, ipady=4)
 
+        self.purge_btn = ttk.Button(
+            action_frame,
+            text="🗑  Purge Presets & Login",
+            command=self._purge_presets,
+        )
+        self.purge_btn.pack(side=tk.LEFT, padx=(0, 8), ipadx=4, ipady=4)
+
         # Status text indicator on the right
         status_box = ttk.Frame(action_frame)
         status_box.pack(side=tk.RIGHT, fill=tk.Y)
@@ -579,7 +587,9 @@ class ExtractorApp:
             "-m",
             "profile_extractor",
             "run",
+            "--input",
             str(input_path.resolve()),
+            "--output",
             output_path_str,
         ]
 
@@ -747,6 +757,63 @@ class ExtractorApp:
         self._set_running_state(False)
         self.process = None
 
+    def _purge_presets(self) -> None:
+        """Reset and purge login session, remembered input, and output paths."""
+        if self._is_running:
+            messagebox.showinfo(
+                "Pipeline Active", "Please wait for or stop the active run before purging presets."
+            )
+            return
+
+        confirm = messagebox.askyesno(
+            "Purge Presets & Login",
+            "This will remove:\n"
+            "• Saved LinkedIn login session (.auth/state.json)\n"
+            "• Remembered candidate spreadsheet path\n"
+            "• Remembered output folder path\n\n"
+            "Are you sure you want to purge all presets and reset paths?",
+        )
+        if not confirm:
+            return
+
+        # 1. Remove login session
+        auth_file = AUTH_STATE_FILE
+        auth_removed = False
+        if auth_file.is_file():
+            try:
+                auth_file.unlink()
+                auth_removed = True
+            except Exception as e:
+                self._log_line(f"[WARNING] Could not delete {auth_file}: {e}\n", tag="warning")
+
+        # 2. Remove remembered state file
+        state_removed = False
+        if STATE_FILE.is_file():
+            try:
+                STATE_FILE.unlink()
+                state_removed = True
+            except Exception as e:
+                self._log_line(f"[WARNING] Could not delete {STATE_FILE}: {e}\n", tag="warning")
+
+        # 3. Clear GUI fields
+        self.input_var.set("")
+        self.output_var.set("output")
+        self.status_var.set("Presets Purged")
+        self.status_display.config(foreground="#ce9178")
+
+        self._log_line("\n" + "=" * 65 + "\n", tag="dim")
+        self._log_line("[PURGE] Successfully reset all presets:\n", tag="info")
+        if auth_removed:
+            self._log_line("  • Removed saved login session (.auth/state.json)\n", tag="info")
+        else:
+            self._log_line("  • No saved login session file found (.auth/state.json)\n", tag="dim")
+        if state_removed:
+            self._log_line("  • Removed remembered path history (.run_state.json)\n", tag="info")
+        else:
+            self._log_line("  • No path history file found (.run_state.json)\n", tag="dim")
+        self._log_line("  • Reset spreadsheet input and output folder entries to defaults.\n", tag="info")
+        self._log_line("=" * 65 + "\n\n", tag="dim")
+
     def _set_running_state(self, running: bool) -> None:
         """Toggle UI button enabled/disabled states based on execution status.
 
@@ -757,10 +824,12 @@ class ExtractorApp:
         if running:
             self.start_btn.config(state=tk.DISABLED)
             self.login_btn.config(state=tk.DISABLED)
+            self.purge_btn.config(state=tk.DISABLED)
             self.stop_btn.config(state=tk.NORMAL)
         else:
             self.start_btn.config(state=tk.NORMAL)
             self.login_btn.config(state=tk.NORMAL)
+            self.purge_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
 
     def _on_close(self) -> None:

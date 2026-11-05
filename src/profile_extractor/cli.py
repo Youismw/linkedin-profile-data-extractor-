@@ -321,6 +321,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Target polite delay between profiles in seconds (0.0 to 60.0, default: 1.5).",
     )
+    run_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        default=False,
+        help="Do not automatically open output directory in Windows Explorer when run finishes",
+    )
 
     # --------------------------------------------------------------------------
     # Subcommand: 'login' (Interactive session creation)
@@ -722,30 +728,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
             # Automatically pop open a single Windows File Explorer window directly into profiles/
-            try:
-                profiles_dir = config.output_dir / "profiles"
-                abs_output = (
-                    profiles_dir.resolve() if profiles_dir.is_dir() else config.output_dir.resolve()
-                )
-                abs_output.mkdir(parents=True, exist_ok=True)
-                print(f"Opening output folder: {abs_output}")
-                if sys.platform == "win32":
-                    opened = False
-                    # Primary mechanism: os.startfile() invokes native Windows shell association
-                    try:
-                        os.startfile(str(abs_output))
-                        opened = True
-                    except Exception:
-                        pass
-                    # Secondary fallback: launch explorer.exe directly via subprocess
-                    if not opened:
+            # (Skipped if --no-open was requested, preventing Windows from locking the output folder)
+            if not getattr(args, "no_open", False):
+                try:
+                    profiles_dir = config.output_dir / "profiles"
+                    abs_output = (
+                        profiles_dir.resolve() if profiles_dir.is_dir() else config.output_dir.resolve()
+                    )
+                    abs_output.mkdir(parents=True, exist_ok=True)
+                    print(f"Opening output folder: {abs_output}")
+                    if sys.platform == "win32":
+                        opened = False
+                        # Primary mechanism: os.startfile() invokes native Windows shell association
                         try:
-                            subprocess.Popen(f'explorer "{abs_output}"', shell=True)
+                            os.startfile(str(abs_output))
+                            opened = True
                         except Exception:
                             pass
-            except Exception:
-                # Explorer popup errors must never prevent returning success code
-                pass
+                        # Secondary fallback: launch explorer.exe directly via subprocess
+                        if not opened:
+                            try:
+                                subprocess.Popen(f'explorer "{abs_output}"', shell=True)
+                            except Exception:
+                                pass
+                except Exception:
+                    # Explorer popup errors must never prevent returning success code
+                    pass
 
             if summary.rows_valid > 0 and summary.ok_count == 0:
                 print(

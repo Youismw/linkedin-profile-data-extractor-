@@ -74,10 +74,43 @@ def test_gui_app_initialization_and_slider_events() -> None:
         # Test toggle UI state helper
         app._set_running_state(True)
         assert str(app.start_btn.cget("state")) == str(tk.DISABLED)
+        assert str(app.login_btn.cget("state")) == str(tk.DISABLED)
+        assert str(app.purge_btn.cget("state")) == str(tk.DISABLED)
         assert str(app.stop_btn.cget("state")) == str(tk.NORMAL)
 
         app._set_running_state(False)
         assert str(app.start_btn.cget("state")) == str(tk.NORMAL)
+        assert str(app.login_btn.cget("state")) == str(tk.NORMAL)
+        assert str(app.purge_btn.cget("state")) == str(tk.NORMAL)
         assert str(app.stop_btn.cget("state")) == str(tk.DISABLED)
+    finally:
+        root.destroy()
+
+
+def test_gui_purge_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that _purge_presets deletes auth and state files and clears entry variables."""
+    mock_state_file = tmp_path / ".run_state.json"
+    mock_auth_file = tmp_path / "mock_auth_state.json"
+    mock_state_file.write_text('{"last_input": "abc", "last_output": "xyz"}', encoding="utf-8")
+    mock_auth_file.write_text('{"cookies": []}', encoding="utf-8")
+
+    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
+    monkeypatch.setattr("profile_extractor.gui.AUTH_STATE_FILE", mock_auth_file)
+    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *args, **kwargs: True)
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ExtractorApp(root)
+        app.input_var.set("some_path.xlsx")
+        app.output_var.set("custom_output")
+
+        app._purge_presets()
+
+        assert not mock_state_file.exists()
+        assert not mock_auth_file.exists()
+        assert app.input_var.get() == ""
+        assert app.output_var.get() == "output"
+        assert app.status_var.get() == "Presets Purged"
     finally:
         root.destroy()
