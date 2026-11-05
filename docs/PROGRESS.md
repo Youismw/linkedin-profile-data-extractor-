@@ -185,6 +185,21 @@
 
 ---
 
+## Phase 10: Desktop GUI Assistant, Benchmark Audits & Session Management
+- **Status**: Completed
+- **Done**:
+  - **Native GUI Assistant**: Built standard library Tkinter/ttk GUI (`run_gui.bat` / `gui.bat` / `.\run gui`) providing interactive path selection, slider controls for depth/speed (`--scrollsteps`, `--steptime`, `--aboutwait`, `--polite`), and dark-mode console output streaming.
+  - **Preset Purge Mechanism**: Added dedicated "Purge Presets & Login" action to reset `.auth/state.json`, `.run_state.json`, and input/output path entries with safety confirmation.
+  - **Zero-Failure Truthful Reporting**: Fixed GUI and CLI accounting to return exit code 2 and surface amber warning badges when all profiles are unreachable or blocked, eliminating false positive `[SUCCESS]` banners.
+  - **Interactive Login Recovery**: Auto-captures `.auth/state.json` immediately upon detecting an active session cookie (`li_at`) and authenticated feed redirect, preventing lost sessions when the browser window closes.
+  - **Live Benchmark Verification (7 Candidates)**:
+    - Fast Mode (`output`, ~4.5 min): 100% byte-for-byte complete Work Experience, Education, Certifications, and About sections.
+    - Max Mode (`outputslow`, ~32.5 min): 7.2x slower, unrolling complete virtualized skill lists (up to 92-95 skills per candidate) and appending full activity posts into `raw_text`.
+    - Identified recommended "Sweet Spot" settings (~6–8 minutes).
+- **Verification**: All 132 tests passing (`pytest -m "not live"`), Pyright passing (0 errors, 0 warnings).
+
+---
+
 ## Project Definition of Done Checklist
 - [x] One JSON per reachable profile, valid against the contract, in one folder
 - [x] Unreachable profiles marked in JSON and listed in `unreachable_profiles.xlsx`

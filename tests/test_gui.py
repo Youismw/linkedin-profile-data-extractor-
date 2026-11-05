@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox
 
 import pytest
 
@@ -96,7 +97,11 @@ def test_gui_purge_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
     monkeypatch.setattr("profile_extractor.gui.AUTH_STATE_FILE", mock_auth_file)
-    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *args, **kwargs: True)
+
+    def _mock_confirm(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(messagebox, "askyesno", _mock_confirm)
 
     root = tk.Tk()
     root.withdraw()
