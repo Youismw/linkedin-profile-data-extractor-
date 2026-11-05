@@ -11,20 +11,25 @@ Module Communications:
 1. Upstream Callers:
    - `profile_extractor.cli`:
      * Calls `is_session_expired(auth_state_path)` during pre-flight health checks.
-     * Calls `run_interactive_login(auth_state_path)` when the user runs `.\run login`
+     * Calls `run_interactive_login(auth_state_path)` when the user runs `.\\run login`
        or when an active session has expired.
+   - `profile_extractor.gui`:
+     * Calls `run_interactive_login()` via subprocess when "LinkedIn Login" button is clicked.
    - `profile_extractor.fetcher.playwright_fetcher`:
      * Calls `run_interactive_login()` as an in-flight recovery mechanism if an authwall
        is encountered mid-scrape.
-   - Unit tests in `tests/test_playwright_fetcher.py`.
 
 2. Downstream Dependencies:
    - Playwright: Launches Chromium in headed mode (`headless=False`) with human-like viewport.
    - Filesystem: Saves cookie and localStorage JSON snapshot to `.auth/state.json`.
 """
 
+from __future__ import annotations
+
 import json
 import os
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -41,7 +46,7 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
     Steps:
     1. Launches a non-headless Chromium window navigating to LinkedIn login.
     2. Consenting employee logs in manually, completing 2FA / verification prompts.
-    3. Employee presses [ENTER] in the terminal once their feed has loaded.
+    3. Auto-detects login when candidate reaches feed / profile, or user presses [ENTER].
     4. Playwright exports cookies and localStorage to auth_state_path (.auth/state.json).
     5. Headless automated extractions reuse this session file without user interaction.
     """
@@ -55,8 +60,26 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
     print("A visible browser window will open at the LinkedIn login page.")
     print("Please log in manually using your consenting employee account,")
     print("including completing any 2FA or verification prompt.")
-    print("When you see your LinkedIn feed or home page, return here and press [ENTER].")
+    print("The helper will automatically detect when you reach your feed,")
+    print("or you can press [ENTER] in the terminal once signed in.")
     print("=" * 70 + "\n")
+
+    is_interactive = sys.stdin is not None and sys.stdin.isatty()
+    user_pressed_enter = threading.Event()
+    user_cancelled = threading.Event()
+
+    def _listen_stdin() -> None:
+        try:
+            val = input("\n>>> Press [ENTER] after logging in (or 'q' to cancel): ").strip()
+            if val.lower() in ("q", "quit", "exit", "logout"):
+                user_cancelled.set()
+            else:
+                user_pressed_enter.set()
+        except (EOFError, Exception):
+            pass
+
+    if is_interactive:
+        threading.Thread(target=_listen_stdin, daemon=True).start()
 
     with sync_playwright() as p:
         # Launch visible browser for human interaction
@@ -74,36 +97,70 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
         logger.info("Opening visible browser to %s", LINKEDIN_LOGIN_URL)
         page.goto(LINKEDIN_LOGIN_URL)
 
-        # Pause and wait for human confirmation after 2FA sign-in
-        user_input = input("\n>>> Press [ENTER] after logging in (or 'q' to cancel): ").strip()
-        cancel_words = ("q", "quit", "exit", "logout")
-        if user_input.lower() in cancel_words or user_input.startswith((".\\run", "run", "python")):
-            try:
-                browser.close()
-            except Exception:
-                pass
-            print("\n[!] Login cancelled by user.")
-            raise RuntimeError("Login cancelled by user.")
+        start_time = time.time()
+        timeout_seconds = 600  # 10 minutes maximum for manual 2FA
 
-        # Capture complete session cookies and localStorage
-        try:
-            context.storage_state(path=str(target_path))
-        except Exception as err:
-            logger.error("Failed to capture session state: %s", err)
-            raise RuntimeError(
-                f"Could not save session. Ensure browser was not prematurely closed: {err}"
-            ) from err
-        finally:
+        while time.time() - start_time < timeout_seconds:
+            if user_cancelled.is_set():
+                print("\n[!] Login cancelled by user.")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                raise RuntimeError("Login cancelled by user.")
+
+            # Check if browser was closed by user
+            if page.is_closed():
+                break
+
+            # Check if user pressed Enter in terminal
+            if user_pressed_enter.is_set():
+                break
+
+            # Auto-detect login success via cookies and URL
             try:
-                browser.close()
+                cookie_names = {c.get("name") for c in context.cookies() if c.get("name")}
+                current_url = page.url.lower()
+                has_auth = "li_at" in cookie_names
+                on_app_page = any(
+                    path in current_url
+                    for path in ("/feed", "/in/", "/mynetwork", "/messaging", "/notifications")
+                )
+                not_on_auth_gate = (
+                    "login" not in current_url
+                    and "checkpoint" not in current_url
+                    and "uas" not in current_url
+                )
+
+                if has_auth and (on_app_page or not_on_auth_gate):
+                    print("\n[OK] Detected active LinkedIn login session in browser!")
+                    page.wait_for_timeout(3000)  # Settle companion cookies
+                    break
             except Exception:
                 pass
+
+            page.wait_for_timeout(1000)
+
+        # Capture complete session cookies and localStorage before closing browser
+        if not page.is_closed():
+            try:
+                context.storage_state(path=str(target_path))
+            except Exception as err:
+                logger.error("Failed to capture session state: %s", err)
+                raise RuntimeError(
+                    f"Could not save session. Ensure browser was not prematurely closed: {err}"
+                ) from err
+            finally:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
     # Verify that an actual authenticated session cookie ('li_at') was captured
     if is_session_expired(target_path):
         target_path.unlink(missing_ok=True)
         print("\n[!] Warning: No authenticated LinkedIn session ('li_at' cookie) was detected.")
-        print("    You must finish signing in before pressing Enter.")
+        print("    You must finish signing in before the browser is closed.")
         raise RuntimeError("No authenticated session captured.")
 
     # Apply restrictive file permissions where supported (POSIX 0o600)
