@@ -593,9 +593,9 @@ class ExtractorApp:
         if self.prune_var.get():
             cmd.append("--prune")
 
-        scroll_steps = int(self.scroll_steps_var.get())
-        step_time = int(self.step_time_var.get())
-        about_wait = int(self.about_wait_var.get())
+        scroll_steps = (self.scroll_steps_var.get())
+        step_time = (self.step_time_var.get())
+        about_wait = (self.about_wait_var.get())
         polite_delay = float(self.polite_delay_var.get())
 
         cmd.extend(["--scrollsteps", str(scroll_steps)])
