@@ -1,0 +1,16 @@
+search-path = ["src"]
+python-version = "3.13"
+preset = "basic"
+ignore-missing-imports = ["openpyxl.*"]
+project-includes = ["src", "tests"]
+project-excludes = [".venv", "build", "dist"]
+
+[errors]
+implicit-bool = false
+unused-call-result = false
+unknown-variable-type = false
+bad-argument-type = false
+unannotated-parameter = false
+unannotated-return = false
+implicit-any = false
+implicit-any-parameter = false

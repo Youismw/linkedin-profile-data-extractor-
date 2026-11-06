@@ -445,32 +445,79 @@ class PlaywrightFetcher:
                     # If this is a contact overlay subpage, trigger and wait for the modal dialog to hydrate
                     if "/overlay/contact-info" in url:
                         try:
-                            # 1. Trigger open if not already open
-                            page.evaluate("""() => {
-                                const dialog = document.querySelector('[role="dialog"]');
-                                if (dialog && (dialog.innerText || '').length > 20) return;
-                                const link = document.querySelector(
-                                    '#top-card-text-details-contact-info, ' +
-                                    'a[href*="/overlay/contact-info"], ' +
-                                    'a[id*="contact-info"]'
-                                );
-                                if (link) {
-                                    link.click();
-                                    return;
+                            # 1. Check if genuine contact modal is already open and hydrated
+                            is_already_open = page.evaluate("""() => {
+                                const modals = Array.from(document.querySelectorAll(
+                                    '#artdeco-modal-outlet [role="dialog"], #interop-outlet [role="dialog"], ' +
+                                    '.artdeco-modal, [role="dialog"], [aria-modal="true"]'
+                                )).filter(m => !m.closest('nav, header, #global-nav, #global-nav-typeahead, .search-typeahead'));
+
+                                for (const m of modals) {
+                                    const txt = (m.innerText || '').toLowerCase();
+                                    if (txt.includes('recent entity history') || txt.includes('suggestions available')) continue;
+                                    if (
+                                        m.querySelector('.pv-contact-info, .ci-vanity-url, .ci-email, .ci-phone, a[href^="mailto:"], a[href*="linkedin.com/in/"]') !== null
+                                        || (txt.includes('profile') && (txt.includes('email') || txt.includes('phone') || txt.includes('website') || txt.includes('connected') || txt.includes('contact')))
+                                    ) {
+                                        return true;
+                                    }
                                 }
-                                const allLinks = Array.from(document.querySelectorAll('a, button'));
-                                const match = allLinks.find(el => (el.innerText || '').trim().toLowerCase() === 'contact info');
-                                if (match) match.click();
+                                return false;
                             }""")
-                            # 2. Wait for modal dialog to hydrate with contact info content
+
+                            # 2. Trigger click if not already open
+                            if not is_already_open:
+                                try:
+                                    contact_locator = page.locator(
+                                        'a[href*="/overlay/contact-info"], #top-card-text-details-contact-info, a[id*="contact-info"]'
+                                    ).first
+                                    contact_locator.click(timeout=2500)
+                                except Exception:
+                                    # Fallback: JavaScript dispatch for synthetic/obscured links
+                                    page.evaluate("""() => {
+                                        const link = document.querySelector(
+                                            'a[href*="/overlay/contact-info"], #top-card-text-details-contact-info, a[id*="contact-info"]'
+                                        );
+                                        if (link) {
+                                            link.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+                                            link.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
+                                            link.click();
+                                            return;
+                                        }
+                                        const allLinks = Array.from(document.querySelectorAll('a, button'));
+                                        const match = allLinks.find(el => (el.innerText || '').trim().toLowerCase() === 'contact info');
+                                        if (match) {
+                                            match.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+                                            match.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true}));
+                                            match.click();
+                                        }
+                                    }""")
+
+                            # 3. Wait for contact modal dialog to hydrate with contact info content
                             page.wait_for_function(
                                 """() => {
-                                    const modal = document.querySelector(
-                                        '[role="dialog"], .artdeco-modal, section.pv-contact-info, #pv-contact-info'
-                                    );
-                                    if (!modal) return false;
-                                    const txt = (modal.innerText || modal.textContent || '').toLowerCase();
-                                    return txt.includes('contact') || txt.includes('email') || txt.includes('phone') || txt.includes('website') || txt.includes('profile');
+                                    const modals = Array.from(document.querySelectorAll(
+                                        '#artdeco-modal-outlet [role="dialog"], #interop-outlet [role="dialog"], ' +
+                                        '.artdeco-modal, [role="dialog"], [aria-modal="true"], section.pv-contact-info, #pv-contact-info'
+                                    )).filter(m => !m.closest('nav, header, #global-nav, #global-nav-typeahead, .search-typeahead'));
+
+                                    for (const modal of modals) {
+                                        const txt = (modal.innerText || modal.textContent || '').toLowerCase();
+                                        if (txt.includes('recent entity history') || txt.includes('suggestions available')) continue;
+                                        if (
+                                            modal.querySelector('.pv-contact-info, .ci-vanity-url, .ci-email, .ci-phone, .ci-websites, a[href^="mailto:"], a[href^="tel:"], a[href*="linkedin.com/in/"]') !== null
+                                            || txt.includes('contact')
+                                            || txt.includes('email')
+                                            || txt.includes('phone')
+                                            || txt.includes('website')
+                                            || txt.includes('profile')
+                                            || txt.includes('connected')
+                                            || txt.includes('birthday')
+                                        ) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
                                 }""",
                                 timeout=min(self.timeout_ms, 4000),
                             )

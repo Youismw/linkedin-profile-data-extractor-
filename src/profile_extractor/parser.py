@@ -953,23 +953,37 @@ def _find_contact_info_modal(soup: BeautifulSoup) -> Tag | None:
     """Locate the genuine LinkedIn contact info modal dialog.
 
     Specifically excludes top-nav search autocomplete popups, global headers, and sidebars.
+    Supports both legacy #artdeco-modal-outlet and modern #interop-outlet / aria-modal structures.
     """
-    outlet = soup.select_one("#artdeco-modal-outlet")
-    if outlet:
-        for dlg in outlet.select('[role="dialog"], .artdeco-modal'):
-            txt = dlg.get_text().lower()
-            if "recent entity history" in txt or "suggestions available" in txt:
-                continue
-            if (
-                "contact info" in txt
-                or "email" in txt
-                or "phone" in txt
-                or dlg.select_one("#pv-contact-info, .pv-contact-info")
-            ):
-                return dlg
+    for outlet_sel in ("#artdeco-modal-outlet", "#interop-outlet"):
+        outlet = soup.select_one(outlet_sel)
+        if outlet:
+            for dlg in outlet.select('[role="dialog"], .artdeco-modal, [aria-modal="true"]'):
+                txt = dlg.get_text().lower()
+                if "recent entity history" in txt or "suggestions available" in txt:
+                    continue
+                if (
+                    "contact info" in txt
+                    or "email" in txt
+                    or "phone" in txt
+                    or "website" in txt
+                    or "profile" in txt
+                    or "connected" in txt
+                    or dlg.select_one(
+                        "#pv-contact-info, .pv-contact-info, .ci-vanity-url, "
+                        ".ci-email, .ci-phone, a[href^='mailto:'], a[href*='linkedin.com/in/']"
+                    )
+                ):
+                    return dlg
 
-    for dlg in soup.select('[role="dialog"], .artdeco-modal, section.pv-contact-info, #pv-contact-info'):
-        if dlg.find_parent(["nav", "header"]) or dlg.get("id") == "global-nav-typeahead":
+    for dlg in soup.select(
+        '[role="dialog"], [aria-modal="true"], .artdeco-modal, section.pv-contact-info, #pv-contact-info'
+    ):
+        if (
+            dlg.find_parent(["nav", "header"])
+            or dlg.get("id") == "global-nav-typeahead"
+            or dlg.find_parent(id="global-nav-typeahead")
+        ):
             continue
         txt = dlg.get_text().lower()
         if "recent entity history" in txt or "suggestions available" in txt:
@@ -979,7 +993,12 @@ def _find_contact_info_modal(soup: BeautifulSoup) -> Tag | None:
             or "email" in txt
             or "phone" in txt
             or "website" in txt
-            or dlg.select_one("#pv-contact-info, .pv-contact-info")
+            or "profile" in txt
+            or "connected" in txt
+            or dlg.select_one(
+                "#pv-contact-info, .pv-contact-info, .ci-vanity-url, "
+                ".ci-email, .ci-phone, a[href^='mailto:'], a[href*='linkedin.com/in/']"
+            )
         ):
             return dlg
 
@@ -1165,6 +1184,14 @@ def parse_contact_info(html: str) -> ContactInfo | None:
             raw_href = tel_link.get("href")
             if isinstance(raw_href, str):
                 phone = raw_href.removeprefix("tel:").strip()
+        else:
+            lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+            for p_idx, line in enumerate(lines[:-1]):
+                if line.lower() in ("phone", "phone number", "mobile", "mobile number"):
+                    cand = lines[p_idx + 1]
+                    if re.search(r"^[+]?[\d\s().-]{7,25}$", cand):
+                        phone = cand
+                        break
 
     if not profile_url:
         for a_tag in modal.find_all("a", href=True):
