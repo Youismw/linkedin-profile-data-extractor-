@@ -449,7 +449,9 @@ class PlaywrightFetcher:
                             is_already_open = page.evaluate("""() => {
                                 const modals = Array.from(document.querySelectorAll(
                                     '#artdeco-modal-outlet [role="dialog"], #interop-outlet [role="dialog"], ' +
-                                    '.artdeco-modal, [role="dialog"], [aria-modal="true"]'
+                                    '.artdeco-modal, [role="dialog"], [aria-modal="true"], ' +
+                                    '[data-sdui-screen*="ContactDetailsOverlay"], [id*="ContactInfoDetailSection"], ' +
+                                    'header#dialog-header'
                                 )).filter(m => !m.closest('nav, header, #global-nav, #global-nav-typeahead, .search-typeahead'));
 
                                 for (const m of modals) {
@@ -458,6 +460,7 @@ class PlaywrightFetcher:
                                     if (
                                         m.querySelector('.pv-contact-info, .ci-vanity-url, .ci-email, .ci-phone, a[href^="mailto:"], a[href*="linkedin.com/in/"]') !== null
                                         || (txt.includes('profile') && (txt.includes('email') || txt.includes('phone') || txt.includes('website') || txt.includes('connected') || txt.includes('contact')))
+                                        || txt.includes('contact info')
                                     ) {
                                         return true;
                                     }
@@ -498,7 +501,9 @@ class PlaywrightFetcher:
                                 """() => {
                                     const modals = Array.from(document.querySelectorAll(
                                         '#artdeco-modal-outlet [role="dialog"], #interop-outlet [role="dialog"], ' +
-                                        '.artdeco-modal, [role="dialog"], [aria-modal="true"], section.pv-contact-info, #pv-contact-info'
+                                        '.artdeco-modal, [role="dialog"], [aria-modal="true"], section.pv-contact-info, #pv-contact-info, ' +
+                                        '[data-sdui-screen*="ContactDetailsOverlay"], [id*="ContactInfoDetailSection"], ' +
+                                        'header#dialog-header, [data-testid="dialog-content"]'
                                     )).filter(m => !m.closest('nav, header, #global-nav, #global-nav-typeahead, .search-typeahead'));
 
                                     for (const modal of modals) {
@@ -628,6 +633,8 @@ class PlaywrightFetcher:
                 try:
                     expanded_count = page.evaluate("""() => {
                         const containers = [
+                            document.querySelector('[data-sdui-screen*="ContactDetailsOverlay"]'),
+                            document.querySelector('[id*="ContactInfoDetailSection"]'),
                             document.querySelector('[role="dialog"]'),
                             document.querySelector('main')
                         ].filter(Boolean);

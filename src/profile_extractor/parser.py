@@ -953,8 +953,32 @@ def _find_contact_info_modal(soup: BeautifulSoup) -> Tag | None:
     """Locate the genuine LinkedIn contact info modal dialog.
 
     Specifically excludes top-nav search autocomplete popups, global headers, and sidebars.
-    Supports both legacy #artdeco-modal-outlet and modern #interop-outlet / aria-modal structures.
+    Supports modern SDUI overlay containers, legacy #artdeco-modal-outlet, and #interop-outlet.
     """
+    # 1. Modern SDUI Contact Overlay container check
+    sdui_candidate = soup.select_one(
+        '[data-sdui-screen*="ContactDetailsOverlay"], '
+        '[id*="ContactInfoDetailSection"]'
+    )
+    if sdui_candidate is not None:
+        outer_wrapper = sdui_candidate.find_parent(
+            lambda t: isinstance(t, Tag) and t.name == "div" and t.find("header", id="dialog-header") is not None
+        )
+        target = outer_wrapper if outer_wrapper is not None else sdui_candidate
+        txt = target.get_text().lower()
+        if "recent entity history" not in txt and "suggestions available" not in txt:
+            return target
+
+    # 2. Check for dialog wrapper containing header#dialog-header with "contact info"
+    for hdr in soup.select("header#dialog-header, header:has(h2)"):
+        if "contact info" in hdr.get_text().lower():
+            wrapper = hdr.find_parent(["div", "section"])
+            if wrapper is not None:
+                txt = wrapper.get_text().lower()
+                if "recent entity history" not in txt and "suggestions available" not in txt:
+                    return wrapper
+
+    # 3. Known modal outlets
     for outlet_sel in ("#artdeco-modal-outlet", "#interop-outlet"):
         outlet = soup.select_one(outlet_sel)
         if outlet:
@@ -976,6 +1000,7 @@ def _find_contact_info_modal(soup: BeautifulSoup) -> Tag | None:
                 ):
                     return dlg
 
+    # 4. Global dialogs
     for dlg in soup.select(
         '[role="dialog"], [aria-modal="true"], .artdeco-modal, section.pv-contact-info, #pv-contact-info'
     ):

@@ -386,3 +386,58 @@ class TestParser:
         assert ci is not None
         assert ci.email == "contact@company.org"
         assert ci.phone == "+123456789"
+
+    def test_parse_contact_info_sdui_modal(self) -> None:
+        """Verify modern LinkedIn SDUI contact overlay modal parsing."""
+        from profile_extractor.parser import parse_contact_info
+
+        sdui_html = """
+        <div class="f49ayy f49iun f49ivr f49l40">
+            <header id="dialog-header">
+                <h2>Contact info</h2>
+            </header>
+            <div data-testid="dialog-content">
+                <div data-sdui-screen="com.linkedin.sdui.flagshipnav.profile.ProfileContactDetailsOverlay">
+                    <div id="com.linkedin.sdui.profile.card.refACoAAFuiOaABNrD5PImIzCtko6mrvf_EuS1dK2MContactInfoDetailSection">
+                        <h3>Gaurav's profile</h3>
+                        <a href="https://www.linkedin.com/in/gaurav-akoliya-aa8a3636a/">
+                            linkedin.com/in/gaurav-akoliya-aa8a3636a
+                        </a>
+                        <h3>Email</h3>
+                        <a href="mailto:gaurav@example.com">gaurav@example.com</a>
+                        <h3>Phone</h3>
+                        <a href="tel:+919876543210">+91 9876543210</a>
+                        <h3>Website</h3>
+                        <a href="https://gauravakoliya.dev">Portfolio</a>
+                        <a href="https://www.linkedin.com/premium/products/?upsell=1">Premium</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+        ci = parse_contact_info(sdui_html)
+        assert ci is not None
+        assert ci.profile_url == "https://www.linkedin.com/in/gaurav-akoliya-aa8a3636a/"
+        assert ci.email == "gaurav@example.com"
+        assert ci.phone == "+919876543210"
+        assert ci.websites == ["https://gauravakoliya.dev"]
+        # Make sure internal linkedin.com upsell link is excluded
+        assert not any("linkedin.com" in w for w in (ci.websites or []))
+
+    def test_parse_contact_info_ignores_search_autocomplete(self) -> None:
+        """Verify top-nav search autocomplete popups are strictly excluded."""
+        from profile_extractor.parser import parse_contact_info
+
+        autocomplete_html = """
+        <div role="dialog" id="global-nav-typeahead">
+            <div data-testid="typeahead-input">
+                <input placeholder="Search" />
+            </div>
+            <div>
+                <h3>Recent entity history</h3>
+                <a href="https://www.linkedin.com/in/other-person/">Other Person</a>
+            </div>
+        </div>
+        """
+        ci = parse_contact_info(autocomplete_html)
+        assert ci is None
