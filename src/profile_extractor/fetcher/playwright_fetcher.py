@@ -497,7 +497,7 @@ class PlaywrightFetcher:
                 is_contact_overlay = "/overlay/contact-info" in url
                 effective_scroll_steps = 1 if is_contact_overlay else self.max_scroll_steps
 
-                for _ in range(effective_scroll_steps):
+                for step_idx in range(effective_scroll_steps):
                     scroll_info = page.evaluate("""() => {
                         const m = document.querySelector('main')
                             || document.scrollingElement
@@ -543,9 +543,17 @@ class PlaywrightFetcher:
                                 stable_bottom_samples = 0
                             previous_card_text_length = card_text_length
 
-                            # Require both scroll position and captured card text to
-                            # settle, rather than stopping after two empty bottom polls.
-                            if consecutive_at_bottom >= 3 and stable_bottom_samples >= 2:
+                            # Require both scroll position and captured card text to settle.
+                            # Never early-exit before completing at least 8 steps or while
+                            # total captured text is under 1200 chars (preventing early exit on skeletons).
+                            min_steps_before_early_stop = min(8, max(effective_scroll_steps - 2, 1))
+                            text_len = (card_text_length or 0)
+                            if (
+                                consecutive_at_bottom >= 3
+                                and stable_bottom_samples >= 2
+                                and step_idx >= min_steps_before_early_stop
+                                and text_len >= 1200
+                            ):
                                 reached_bottom = True
                                 break
                         else:

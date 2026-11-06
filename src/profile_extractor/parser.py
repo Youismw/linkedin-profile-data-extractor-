@@ -940,13 +940,50 @@ def _clean_external_website_url(raw_href: str) -> str | None:
                 return _clean_external_website_url(target)
         if (host in {"linkedin.com", "maps.google.com", "google.com"}) and "maps" in href:
             return None
-        if host == "linkedin.com":
+        if host == "linkedin.com" or host.endswith(".linkedin.com"):
             return None
         if parsed.scheme.lower() not in {"http", "https"}:
             return None
         return href
     except Exception:
         return None
+
+
+def _find_contact_info_modal(soup: BeautifulSoup) -> Tag | None:
+    """Locate the genuine LinkedIn contact info modal dialog.
+
+    Specifically excludes top-nav search autocomplete popups, global headers, and sidebars.
+    """
+    outlet = soup.select_one("#artdeco-modal-outlet")
+    if outlet:
+        for dlg in outlet.select('[role="dialog"], .artdeco-modal'):
+            txt = dlg.get_text().lower()
+            if "recent entity history" in txt or "suggestions available" in txt:
+                continue
+            if (
+                "contact info" in txt
+                or "email" in txt
+                or "phone" in txt
+                or dlg.select_one("#pv-contact-info, .pv-contact-info")
+            ):
+                return dlg
+
+    for dlg in soup.select('[role="dialog"], .artdeco-modal, section.pv-contact-info, #pv-contact-info'):
+        if dlg.find_parent(["nav", "header"]) or dlg.get("id") == "global-nav-typeahead":
+            continue
+        txt = dlg.get_text().lower()
+        if "recent entity history" in txt or "suggestions available" in txt:
+            continue
+        if (
+            "contact info" in txt
+            or "email" in txt
+            or "phone" in txt
+            or "website" in txt
+            or dlg.select_one("#pv-contact-info, .pv-contact-info")
+        ):
+            return dlg
+
+    return None
 
 
 def parse_contact_info(html: str) -> ContactInfo | None:
@@ -962,23 +999,17 @@ def parse_contact_info(html: str) -> ContactInfo | None:
     for tag in soup.find_all(["script", "style", "noscript", "svg", "template"]):
         tag.decompose()
 
-    # Locate modal container if present; otherwise fallback to whole document
-    modal = (
-        soup.select_one(
-            '[role="dialog"], .artdeco-modal[role="dialog"], .artdeco-modal, '
-            'section.pv-contact-info, .pv-profile-section__section-info'
-        )
-        or soup.select_one(
-            '#artdeco-modal-outlet:has([role="dialog"]), '
-            '#artdeco-modal-outlet:has(.artdeco-modal)'
-        )
-        or soup.find("main")
-        or soup
-    )
-    if len(modal.get_text(strip=True)) < 5:
-        modal = soup.find("main") or soup
+    # Decompose global header, nav, search typeahead, and footer to prevent noise capture
+    for unwanted in soup.select("nav, header, #global-nav, #global-nav-typeahead, footer, .global-footer"):
+        unwanted.decompose()
+
+    modal = _find_contact_info_modal(soup) or soup.select_one("section.pv-contact-info")
+    if modal is None:
+        return None
 
     raw_text = modal.get_text(separator="\n", strip=True)
+    if "recent entity history" in raw_text.lower() or "suggestions available" in raw_text.lower():
+        return None
 
     # Initialize extracted fields
     profile_url: str | None = None

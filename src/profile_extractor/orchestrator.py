@@ -61,6 +61,7 @@ from profile_extractor.models import (
     UnreachableRecord,
 )
 from profile_extractor.parser import (
+    _find_contact_info_modal,
     _is_placeholder_value,
     _merge_complementary_texts,
     _section_text_subsumed,
@@ -727,15 +728,10 @@ def _process_candidate_batch(
                             ):
                                 s_tag.decompose()
                             if section == "contact_info":
-                                modal = (
-                                    sub_soup.select_one(
-                                        '[role="dialog"], .artdeco-modal, #artdeco-modal-outlet, '
-                                        'section.pv-contact-info, .pv-profile-section__section-info'
-                                    )
-                                    or sub_soup.find("main")
-                                    or sub_soup
-                                )
-                                sub_text = modal.get_text(separator="\n", strip=True)
+                                modal = _find_contact_info_modal(sub_soup) or sub_soup.select_one("section.pv-contact-info")
+                                sub_text = modal.get_text(separator="\n", strip=True) if modal else ""
+                                if "recent entity history" in sub_text.lower() or "suggestions available" in sub_text.lower():
+                                    sub_text = ""
                             else:
                                 sub_text = (sub_soup.find("main") or sub_soup).get_text(
                                     separator="\n", strip=True
