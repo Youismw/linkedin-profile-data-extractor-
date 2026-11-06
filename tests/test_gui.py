@@ -32,8 +32,11 @@ def test_gui_run_state_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert loaded["last_output"] == "out_dir"
 
 
-def test_gui_app_initialization_and_slider_events() -> None:
+def test_gui_app_initialization_and_slider_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify ExtractorApp initializes with expected defaults and handles slider callbacks."""
+    mock_state_file = tmp_path / ".run_state.json"
+    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
+
     root = tk.Tk()
     root.withdraw()  # Hide window during test execution
     try:
@@ -123,6 +126,9 @@ def test_gui_purge_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_gui_workers_in_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that specifying workers in GUI appends --workers to the CLI command."""
+    mock_state_file = tmp_path / ".run_state.json"
+    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
+
     mock_input = tmp_path / "test.xlsx"
     mock_input.write_text("dummy", encoding="utf-8")
 

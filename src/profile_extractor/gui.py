@@ -97,9 +97,14 @@ class ExtractorApp:
         # Load remembered paths
         run_state = _load_run_state()
         default_input = run_state.get("last_input", "")
-        if not default_input and Path("C:/Users/ROHIT CHAUHAN/Desktop/profiles.xlsx").is_file():
+        if (not default_input or not Path(default_input).is_file()) and Path("C:/Users/ROHIT CHAUHAN/Desktop/profiles.xlsx").is_file():
             default_input = "C:/Users/ROHIT CHAUHAN/Desktop/profiles.xlsx"
+        elif default_input and not Path(default_input).is_file():
+            default_input = ""
+
         default_output = run_state.get("last_output", "output")
+        if ("AppData" in default_output and "Temp" in default_output) or not default_output:
+            default_output = "output"
 
         # Reactive Variables
         self.input_var = tk.StringVar(value=default_input)
