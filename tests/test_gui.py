@@ -119,3 +119,42 @@ def test_gui_purge_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         assert app.status_var.get() == "Presets Purged"
     finally:
         root.destroy()
+
+
+def test_gui_workers_in_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that specifying workers in GUI appends --workers to the CLI command."""
+    mock_input = tmp_path / "test.xlsx"
+    mock_input.write_text("dummy", encoding="utf-8")
+
+    spawned_cmd: list[str] = []
+
+    class DummyProc:
+        stdout: object = None
+
+        def poll(self) -> int:
+            return 0
+
+    def mock_popen(cmd: object, **_kwargs: object) -> DummyProc:
+        nonlocal spawned_cmd
+        if isinstance(cmd, (list, tuple)):
+            spawned_cmd = [str(x) for x in cmd]
+        return DummyProc()
+
+    monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ExtractorApp(root)
+        app.input_var.set(str(mock_input))
+        app.output_var.set(str(tmp_path / "out"))
+        app.workers_var.set(4)
+
+        app._start_extraction()
+
+        assert "--workers" in spawned_cmd
+        w_idx = spawned_cmd.index("--workers")
+        assert spawned_cmd[w_idx + 1] == "4"
+    finally:
+        root.destroy()
+

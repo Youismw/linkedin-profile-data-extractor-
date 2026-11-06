@@ -47,6 +47,8 @@ from profile_extractor.fetcher import (
     FakeFetcher,
     Fetcher,
     PlaywrightFetcher,
+    ensure_worker_logins,
+    get_worker_auth_path,
     is_session_expired,
     run_interactive_login,
 )
@@ -322,6 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target polite delay between profiles in seconds (0.0 to 60.0, default: 1.5).",
     )
     run_parser.add_argument(
+        "--workers",
+        "-w",
+        dest="workers",
+        type=int,
+        default=None,
+        help="Number of concurrent worker browsers to partition candidate rows across (1 to 10, default: 1).",
+    )
+    run_parser.add_argument(
         "--no-open",
         action="store_true",
         default=False,
@@ -452,6 +462,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"[OK] LinkedIn session removed: {target_auth}")
             else:
                 print(f"No active session found at: {target_auth}")
+            if target_auth.parent.exists():
+                for w_file in target_auth.parent.glob("state_worker_*.json"):
+                    try:
+                        w_file.unlink()
+                        print(f"[OK] Worker session removed: {w_file}")
+                    except Exception:
+                        pass
 
         # 2. Delete remembered path history file if requested
         if clear_paths:
@@ -677,12 +694,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 1
             overrides["polite_delay"] = args.polite_delay
+        if getattr(args, "workers", None) is not None:
+            if not (1 <= args.workers <= 10):
+                print(
+                    f"Error: --workers must be between 1 and 10 (got {args.workers})",
+                    file=sys.stderr,
+                )
+                return 1
+            overrides["workers"] = args.workers
 
         # Load complete runtime configuration with all overrides merged
         config = load_config(args.config_file, overrides=overrides)
         setup_logging(level=config.log_level)
         print(f"Reading candidate spreadsheet: {config.input_file}")
         print(f"Output directory: {config.output_dir}")
+        if config.workers > 1:
+            print(f"Workers: {config.workers} concurrent accounts")
 
         # ----------------------------------------------------------------------
         # 4. Instantiate Fetcher with Session Health Check
@@ -693,16 +720,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             fetcher = FakeFetcher()
         else:
             # Proactive session check: opens login window if cookies are missing or expired
-            if is_session_expired(config.auth_state_path):
-                print("\n" + "=" * 70)
-                print("[!] LinkedIn session not found or has expired.")
-                print("    Opening LinkedIn login window now. Please sign in...")
-                print("=" * 70 + "\n")
+            if config.workers > 1:
+                worker_auths = [
+                    get_worker_auth_path(config.auth_state_path, i, config.workers)
+                    for i in range(config.workers)
+                ]
                 try:
-                    run_interactive_login(config.auth_state_path)
+                    ensure_worker_logins(worker_auths)
                 except Exception as e:
-                    print(f"Error during interactive login: {e}", file=sys.stderr)
+                    print(f"Error during worker interactive login: {e}", file=sys.stderr)
                     return 1
+            else:
+                if is_session_expired(config.auth_state_path):
+                    print("\n" + "=" * 70)
+                    print("[!] LinkedIn session not found or has expired.")
+                    print("    Opening LinkedIn login window now. Please sign in...")
+                    print("=" * 70 + "\n")
+                    try:
+                        run_interactive_login(config.auth_state_path)
+                    except Exception as e:
+                        print(f"Error during interactive login: {e}", file=sys.stderr)
+                        return 1
 
             # PlaywrightFetcher automates headless Chromium with the authenticated session
             fetcher = PlaywrightFetcher(

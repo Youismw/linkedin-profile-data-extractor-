@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -40,7 +42,46 @@ from profile_extractor.logging_setup import get_logger
 LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login"
 
 
-def run_interactive_login(auth_state_path: Path | str) -> None:
+def get_worker_auth_path(base_auth_path: Path | str, worker_index: int, total_workers: int) -> Path:
+    """Return the designated authentication state file path for a specific worker.
+
+    If total_workers is 1, uses base_auth_path directly (e.g. .auth/state.json).
+    If total_workers > 1, generates separate paths: .auth/state_worker_1.json, etc.
+    Automatically seeds worker 1 from base_auth_path if worker 1 file is missing.
+    """
+    base = Path(base_auth_path)
+    if total_workers <= 1:
+        return base
+
+    worker_path = base.parent / f"state_worker_{worker_index + 1}.json"
+    # Seed worker 1 from existing base session if available
+    if worker_index == 0 and not worker_path.exists() and base.exists() and not is_session_expired(base):
+        try:
+            worker_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(base, worker_path)
+        except Exception:
+            pass
+
+    return worker_path
+
+
+def ensure_worker_logins(
+    auth_paths: Sequence[Path | str],
+) -> None:
+    """Sequentially verify and prompt interactive login for all worker accounts.
+
+    Ensures that login windows never pop open simultaneously on top of each other.
+    """
+    total = len(auth_paths)
+    for idx, p in enumerate(auth_paths):
+        target = Path(p)
+        if is_session_expired(target):
+            label = f"Worker {idx + 1} of {total}" if total > 1 else "Primary Account"
+            print(f"\n[!] Authentication required for {label} -> {target.name}")
+            run_interactive_login(target, worker_label=label)
+
+
+def run_interactive_login(auth_state_path: Path | str, worker_label: str = "") -> None:
     """Launch a visible Chromium browser for the employee to sign in manually.
 
     Steps:
@@ -54,11 +95,15 @@ def run_interactive_login(auth_state_path: Path | str) -> None:
     target_path = Path(auth_state_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
+    banner_suffix = f" - {worker_label.upper()}" if worker_label else ""
     print("\n" + "=" * 70)
-    print("LINKEDIN INTERACTIVE LOGIN HELPER")
+    print(f"LINKEDIN INTERACTIVE LOGIN HELPER{banner_suffix}")
     print("=" * 70)
     print("A visible browser window will open at the LinkedIn login page.")
-    print("Please log in manually using your consenting employee account,")
+    if worker_label:
+        print(f"Please log in using the dedicated account for: {worker_label}")
+    else:
+        print("Please log in manually using your consenting employee account,")
     print("including completing any 2FA or verification prompt.")
     print("The helper will automatically detect when you reach your feed,")
     print("or you can press [ENTER] in the terminal once signed in.")

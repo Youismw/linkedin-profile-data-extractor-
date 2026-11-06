@@ -80,6 +80,7 @@ class ExtractorConfig(BaseModel):
     prune_stale: bool = Field(default=False)
     stop_on_block: bool = Field(default=True)
     log_level: str = Field(default="INFO")
+    workers: int = Field(default=1, ge=1, le=10)
 
     @field_validator("log_level")
     @classmethod

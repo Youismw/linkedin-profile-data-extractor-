@@ -175,6 +175,36 @@ class LanguageItem(BaseModel):
     raw: str = ""
 
 
+class ContactInfo(BaseModel):
+    """Structured representation of a candidate's contact information.
+
+    Extracted from the LinkedIn contact-info overlay modal or profile DOM.
+
+    Attributes:
+        profile_url: Vanity or canonical profile URL displayed in contact overlay.
+        email: Primary email address or mailto link.
+        phone: Phone number including optional type (Mobile, Work, Home).
+        address: Physical address or location text.
+        websites: List of external website links or labeled portfolios.
+        twitter: Twitter / X handle or link.
+        birthday: Date of birth string if shared publicly.
+        connected: Connection date string (e.g. 'November 4, 2026').
+        raw: Full unparsed text of the contact modal preserved for audit integrity.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    profile_url: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    websites: list[str] | None = None
+    twitter: str | None = None
+    birthday: str | None = None
+    connected: str | None = None
+    raw: str = ""
+
+
 class OtherSection(BaseModel):
     """Unmapped or miscellaneous profile section captured from the DOM.
 
@@ -207,6 +237,7 @@ class Profile(BaseModel):
     certifications: list[CertificationItem] | None = None
     projects: list[ProjectItem] | None = None
     languages: list[LanguageItem] | None = None
+    contact_info: ContactInfo | None = None
 
 
 # ==============================================================================

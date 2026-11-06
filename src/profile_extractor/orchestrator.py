@@ -32,22 +32,28 @@ Module Communications:
      * Constructs `RunSummary`, `UnreachableRecord`, `Status`, `Reason`, `OtherSection`.
 """
 
+import concurrent.futures
 import hashlib
 import random
 import re
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
 from profile_extractor.config import ExtractorConfig
-from profile_extractor.fetcher import Fetcher
+from profile_extractor.fetcher import FakeFetcher, Fetcher
+from profile_extractor.fetcher.login import ensure_worker_logins, get_worker_auth_path
+from profile_extractor.fetcher.playwright_fetcher import PlaywrightFetcher
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import (
+    ContactInfo,
     OtherSection,
     Reason,
     RunSummary,
@@ -61,6 +67,7 @@ from profile_extractor.parser import (
     consolidate_other_sections,
     normalize_section_heading_key,
     parse_certifications_details,
+    parse_contact_info,
     parse_education_details,
     parse_experience_details,
     parse_languages_details,
@@ -68,13 +75,52 @@ from profile_extractor.parser import (
     parse_projects_details,
     parse_skills_details,
 )
-from profile_extractor.reader import read_profile_urls
+from profile_extractor.reader import InputRow, read_profile_urls
 from profile_extractor.writer import (
     profile_filename_stem,
     write_profile_json,
     write_run_summary,
     write_unreachable_report,
 )
+
+
+T = TypeVar("T")
+
+
+def partition_workload(items: Sequence[T], num_workers: int) -> list[list[T]]:
+    """Partition items across num_workers using fair base + remainder division.
+
+    The first remainder items are distributed to earlier workers so no items are dropped.
+    Example: 13 items across 3 workers -> [5, 4, 4]
+    """
+    if not items:
+        return []
+    if num_workers <= 1:
+        return [list(items)]
+    k = min(num_workers, len(items))
+    base = len(items) // k
+    rem = len(items) % k
+    partitions: list[list[T]] = []
+    start = 0
+    for i in range(k):
+        size = base + (1 if i < rem else 0)
+        partitions.append(list(items[start : start + size]))
+        start += size
+    return partitions
+
+
+@dataclass
+class WorkerResult:
+    """Outcome aggregated from a single worker partition execution."""
+
+    ok_count: int = 0
+    unreachable_count: int = 0
+    unreachable_by_reason: dict[str, int] = field(default_factory=dict)
+    unreachable_records: list[UnreachableRecord] = field(default_factory=list)
+    completed_rows: int = 0
+    not_processed_count: int = 0
+    stop_triggered: bool = False
+    interrupted: bool = False
 
 
 def _count_field_richness(items: Any) -> int:
@@ -119,6 +165,30 @@ def _merge_skill_items(current: Any, detailed: Any) -> list[str]:
                 merged.append(clean)
                 seen.add(key)
     return merged
+
+
+def _merge_contact_info(base: ContactInfo, incoming: ContactInfo) -> ContactInfo:
+    """Merge two ContactInfo instances, preferring non-empty incoming values."""
+    combined_websites: list[str] = []
+    seen_websites: set[str] = set()
+    for w in (base.websites or []) + (incoming.websites or []):
+        w_clean = w.strip()
+        if w_clean and w_clean.lower() not in seen_websites:
+            combined_websites.append(w_clean)
+            seen_websites.add(w_clean.lower())
+
+    raw_parts = [r for r in [base.raw, incoming.raw] if r and r.strip()]
+    return ContactInfo(
+        profile_url=incoming.profile_url or base.profile_url,
+        email=incoming.email or base.email,
+        phone=incoming.phone or base.phone,
+        address=incoming.address or base.address,
+        websites=combined_websites or None,
+        twitter=incoming.twitter or base.twitter,
+        birthday=incoming.birthday or base.birthday,
+        connected=incoming.connected or base.connected,
+        raw="\n\n".join(raw_parts),
+    )
 
 
 
@@ -199,6 +269,15 @@ def _discover_profile_detail_pages(
             section = "recent-activity"
             suffix = f"{segments[3].casefold()}/" if len(segments) == 4 else ""
             canonical_path = f"/in/{canonical_slug}/recent-activity/{suffix}"
+        elif (
+            len(segments) == 4
+            and segments[0].casefold() == "in"
+            and segments[1].casefold() == unquote(slug).casefold()
+            and segments[2].casefold() == "overlay"
+            and segments[3].casefold() == "contact-info"
+        ):
+            section = "contact_info"
+            canonical_path = f"/in/{canonical_slug}/overlay/contact-info/"
 
         if not section or not canonical_path:
             continue
@@ -470,6 +549,538 @@ def _recalculate_missing_fields(doc: Any, important_fields: list[str]) -> None:
             missing.append(field)
     doc.meta.missing_fields = missing
 
+
+def _process_candidate_batch(
+    rows: Sequence[InputRow],
+    config: ExtractorConfig,
+    fetcher: Fetcher,
+    filename_stems: dict[int, str],
+    profiles_dir: Path,
+    sleep_fn: Callable[[float], None],
+    worker_idx: int = 0,
+    total_workers: int = 1,
+    stop_event: threading.Event | None = None,
+) -> WorkerResult:
+    """Execute sequential extraction loop for one worker partition of candidate rows."""
+    logger = get_logger()
+    res = WorkerResult()
+    num_rows = len(rows)
+    prefix = f"[Worker {worker_idx + 1}] " if total_workers > 1 else ""
+
+    try:
+        for idx, row in enumerate(rows):
+            if (stop_event and stop_event.is_set()) or res.stop_triggered:
+                res.not_processed_count += 1
+                logger.info(
+                    "%sRow %d: skipped (pipeline stopped after block)", prefix, row.row_number
+                )
+                continue
+
+            slug = row.slug or ""
+            url = row.normalized or ""
+            logger.info(
+                "%sRow %d: visiting candidate profile (%d of %d)...",
+                prefix,
+                row.row_number,
+                idx + 1,
+                num_rows,
+            )
+            logger.debug("%sRow %d: candidate slug '%s'", prefix, row.row_number, slug)
+
+            try:
+                fetch_res = fetcher.fetch(url)
+
+                if fetch_res.status == Status.OK:
+                    doc = parse_profile(
+                        source_url=url,
+                        slug=slug,
+                        html=fetch_res.html,
+                        status=Status.OK,
+                        important_fields=config.important_fields,
+                    )
+                    baseline_profile = doc.profile.model_copy(deep=True)
+
+                    if getattr(config, "deep_details", True) and fetch_res.html:
+                        main_html = fetch_res.html
+                        legacy_attempted_sections: set[str] = set()
+                        detail_specs = [
+                            (
+                                "contact_info",
+                                [
+                                    r"/overlay/contact-info/",
+                                    r"\bcontact\s+info\b",
+                                ],
+                                parse_contact_info,
+                            ),
+                            (
+                                "skills",
+                                [
+                                    r"/details/skills/",
+                                    r"show all\s*(?:\d+)?\s*skills",
+                                    r"skills\s*\(\d+\)",
+                                ],
+                                parse_skills_details,
+                            ),
+                            (
+                                "education",
+                                [r"/details/education/", r"show all\s*(?:\d+)?\s*education"],
+                                parse_education_details,
+                            ),
+                            (
+                                "experience",
+                                [r"/details/experience/", r"show all\s*(?:\d+)?\s*experience"],
+                                parse_experience_details,
+                            ),
+                            (
+                                "certifications",
+                                [
+                                    r"/details/certifications/",
+                                    r"show all\s*(?:\d+)?\s*certifications",
+                                    r"licenses\s*(?:&|and)\s*certifications",
+                                ],
+                                parse_certifications_details,
+                            ),
+                            (
+                                "projects",
+                                [
+                                    r"/details/projects/",
+                                    r"show all\s*(?:\d+)?\s*projects",
+                                    r"projects\s*\(\d+\)",
+                                ],
+                                parse_projects_details,
+                            ),
+                            (
+                                "languages",
+                                [
+                                    r"/details/languages/",
+                                    r"show all\s*(?:\d+)?\s*languages",
+                                    r"languages\s*\(\d+\)",
+                                ],
+                                parse_languages_details,
+                            ),
+                        ]
+                        for section, patterns, parse_fn in detail_specs:
+                            if (stop_event and stop_event.is_set()) or res.stop_triggered:
+                                break
+                            if not any(re.search(pat, main_html, re.I) for pat in patterns):
+                                continue
+                            legacy_attempted_sections.add(section)
+                            if section == "contact_info":
+                                detail_url = f"https://www.linkedin.com/in/{slug}/overlay/contact-info/"
+                            else:
+                                detail_url = f"https://www.linkedin.com/in/{slug}/details/{section}/"
+                            sleep_fn(
+                                random.uniform(config.delay_seconds_min, config.delay_seconds_max)
+                            )
+                            logger.info(
+                                "%sRow %d: unrolling full %s list...",
+                                prefix,
+                                row.row_number,
+                                section,
+                            )
+                            logger.debug(
+                                "%sRow %d: fetching subpage %s",
+                                prefix,
+                                row.row_number,
+                                detail_url,
+                            )
+                            try:
+                                detail_res = fetcher.fetch(detail_url)
+                            except KeyboardInterrupt:
+                                raise
+                            except Exception as detail_err:
+                                logger.warning(
+                                    "%sRow %d: could not fetch %s subpage: %s",
+                                    prefix,
+                                    row.row_number,
+                                    section,
+                                    detail_err,
+                                )
+                                continue
+                            if detail_res.status != Status.OK:
+                                logger.warning(
+                                    "%sRow %d: %s subpage unreachable (%s)",
+                                    prefix,
+                                    row.row_number,
+                                    section,
+                                    detail_res.reason.value if detail_res.reason else "unknown",
+                                )
+                                if config.stop_on_block and detail_res.reason == Reason.BLOCKED:
+                                    logger.warning(
+                                        "%sRow %d: Block detected on %s subpage! Halting run "
+                                        "as stop_on_block=True",
+                                        prefix,
+                                        row.row_number,
+                                        section,
+                                    )
+                                    res.stop_triggered = True
+                                    if stop_event is not None:
+                                        stop_event.set()
+                                continue
+                            if not detail_res.html:
+                                continue
+
+                            # Preserve subpage raw text in doc.raw_text for recovery audit
+                            sub_soup = BeautifulSoup(detail_res.html, "lxml")
+                            for s_tag in sub_soup.find_all(
+                                ["script", "style", "noscript", "svg", "template"]
+                            ):
+                                s_tag.decompose()
+                            if section == "contact_info":
+                                modal = (
+                                    sub_soup.select_one(
+                                        '[role="dialog"], .artdeco-modal, #artdeco-modal-outlet, '
+                                        'section.pv-contact-info, .pv-profile-section__section-info'
+                                    )
+                                    or sub_soup.find("main")
+                                    or sub_soup
+                                )
+                                sub_text = modal.get_text(separator="\n", strip=True)
+                            else:
+                                sub_text = (sub_soup.find("main") or sub_soup).get_text(
+                                    separator="\n", strip=True
+                                )
+                            if sub_text:
+                                doc.raw_text = (
+                                    (doc.raw_text or "")
+                                    + f"\n\n--- Subpage: {section} ---\n"
+                                    + sub_text
+                                )
+
+                            deep_items = parse_fn(detail_res.html)
+                            if section == "contact_info":
+                                if isinstance(deep_items, ContactInfo):
+                                    existing_ci = doc.profile.contact_info
+                                    if existing_ci is None:
+                                        doc.profile.contact_info = deep_items
+                                    else:
+                                        doc.profile.contact_info = _merge_contact_info(
+                                            existing_ci, deep_items
+                                        )
+                                    logger.info(
+                                        "%sRow %d: unrolled %s from overlay modal",
+                                        prefix,
+                                        row.row_number,
+                                        section,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "%sRow %d: could not extract contact_info from overlay modal HTML",
+                                        prefix,
+                                        row.row_number,
+                                    )
+                                continue
+
+                            current_items = getattr(doc.profile, section)
+                            current_count = (
+                                len(current_items)
+                                if isinstance(current_items, (list, tuple))
+                                else 0
+                            )
+                            if (
+                                isinstance(deep_items, (list, tuple))
+                                and len(deep_items) > 0
+                            ):
+                                if section == "skills":
+                                    merged_skills = _merge_skill_items(current_items, deep_items)
+                                    if len(merged_skills) > current_count:
+                                        logger.info(
+                                            "%sRow %d: merged %d skills (was %d; added %d from details page)",
+                                            prefix,
+                                            row.row_number,
+                                            len(merged_skills),
+                                            current_count,
+                                            len(merged_skills) - current_count,
+                                        )
+                                        doc.profile.skills = merged_skills
+                                else:
+                                    deep_score = _count_field_richness(deep_items)
+                                    current_score = _count_field_richness(current_items)
+                                    if (
+                                        len(deep_items) >= current_count
+                                        or deep_score >= current_score
+                                    ):
+                                        logger.info(
+                                            "%sRow %d: unrolled %d total %s (was %d, score %d vs %d)",
+                                            prefix,
+                                            row.row_number,
+                                            len(deep_items),
+                                            section,
+                                            current_count,
+                                            deep_score,
+                                            current_score,
+                                        )
+                                        setattr(doc.profile, section, deep_items)
+
+                        _restore_profile_snapshot_additively(doc.profile, baseline_profile)
+
+                        if not (stop_event and stop_event.is_set()) and not res.stop_triggered:
+                            parser_by_section = {
+                                "contact_info": ("contact_info", parse_contact_info),
+                                "contact-info": ("contact_info", parse_contact_info),
+                                "skills": ("skills", parse_skills_details),
+                                "education": ("education", parse_education_details),
+                                "experience": ("experience", parse_experience_details),
+                                "certifications": ("certifications", parse_certifications_details),
+                                "licenses": ("certifications", parse_certifications_details),
+                                "licenses-and-certifications": (
+                                    "certifications", parse_certifications_details
+                                ),
+                                "projects": ("projects", parse_projects_details),
+                                "languages": ("languages", parse_languages_details),
+                            }
+                            legacy_aliases = {
+                                "contact-info": "contact_info",
+                                "licenses": "certifications",
+                                "licenses-and-certifications": "certifications",
+                            }
+                            legacy_attempted_normalized = {
+                                legacy_aliases.get(item, item)
+                                for item in legacy_attempted_sections
+                            }
+                            discovered_pages = (
+                                []
+                                if getattr(config, "disextra", False)
+                                else _discover_profile_detail_pages(main_html, url, slug)
+                            )
+                            profile_text, _ = _extract_supplemental_page_text(main_html, "profile")
+                            profile_text_norm = _normalised_text(profile_text)
+                            supplemental_attempts = 0
+
+                            for section, detail_url in discovered_pages:
+                                target_field = legacy_aliases.get(section, section)
+                                if target_field in legacy_attempted_normalized:
+                                    continue
+                                if supplemental_attempts >= MAX_SUPPLEMENTAL_DETAIL_PAGES:
+                                    logger.warning(
+                                        "%sRow %d: supplemental detail-page limit (%d) reached",
+                                        prefix,
+                                        row.row_number,
+                                        MAX_SUPPLEMENTAL_DETAIL_PAGES,
+                                    )
+                                    break
+
+                                supplemental_attempts += 1
+                                sleep_fn(
+                                    random.uniform(
+                                        config.delay_seconds_min,
+                                        config.delay_seconds_max,
+                                    )
+                                )
+                                logger.info(
+                                    "%sRow %d: additive discovery fetching '%s'...",
+                                    prefix,
+                                    row.row_number,
+                                    section,
+                                )
+                                try:
+                                    supplemental_res = fetcher.fetch(detail_url)
+                                except KeyboardInterrupt:
+                                    raise
+                                except Exception as supplemental_error:
+                                    logger.warning(
+                                        "%sRow %d: supplemental page '%s' failed: %s",
+                                        prefix,
+                                        row.row_number,
+                                        section,
+                                        supplemental_error,
+                                    )
+                                    continue
+
+                                if supplemental_res.status != Status.OK:
+                                    logger.warning(
+                                        "%sRow %d: supplemental page '%s' unreachable (%s)",
+                                        prefix,
+                                        row.row_number,
+                                        section,
+                                        supplemental_res.reason.value
+                                        if supplemental_res.reason else "unknown",
+                                    )
+                                    if (
+                                        config.stop_on_block
+                                        and supplemental_res.reason == Reason.BLOCKED
+                                    ):
+                                        logger.warning(
+                                            "%sRow %d: block detected on supplemental page '%s'; halting run",
+                                            prefix,
+                                            row.row_number,
+                                            section,
+                                        )
+                                        res.stop_triggered = True
+                                        if stop_event is not None:
+                                            stop_event.set()
+                                        break
+                                    continue
+                                if not supplemental_res.html:
+                                    continue
+
+                                page_text, page_heading = _extract_supplemental_page_text(
+                                    supplemental_res.html, section
+                                )
+                                if not page_text:
+                                    continue
+                                page_norm = _normalised_text(page_text)
+                                if page_norm and profile_text_norm and (
+                                    page_norm == profile_text_norm
+                                    or page_norm in profile_text_norm
+                                ):
+                                    continue
+
+                                heading = page_heading or (
+                                    "Activity" if section == "recent-activity"
+                                    else " ".join(
+                                        part.capitalize()
+                                        for part in section.replace("_", "-").split("-")
+                                    )
+                                )
+                                doc.raw_text = _append_supplemental_raw(
+                                    doc.raw_text, heading, detail_url, page_text
+                                )
+
+                                if section == "about":
+                                    if not doc.profile.about:
+                                        doc.profile.about = page_text
+                                    continue
+
+                                parser_spec = parser_by_section.get(section)
+                                if parser_spec is not None:
+                                    field_name, parser_fn = parser_spec
+                                    supplemental_items = parser_fn(supplemental_res.html)
+                                    if supplemental_items:
+                                        if field_name == "contact_info" and isinstance(
+                                            supplemental_items, ContactInfo
+                                        ):
+                                            existing_ci = doc.profile.contact_info
+                                            doc.profile.contact_info = (
+                                                _merge_contact_info(
+                                                    existing_ci, supplemental_items
+                                                )
+                                                if existing_ci is not None
+                                                else supplemental_items
+                                            )
+                                        else:
+                                            current_items = getattr(doc.profile, field_name, None)
+                                            merged_items = _merge_collection_additively(
+                                                field_name, current_items, supplemental_items
+                                            )
+                                            setattr(doc.profile, field_name, merged_items)
+                                    continue
+
+                                _append_other_section_additively(
+                                    doc.other_sections, heading, page_text
+                                )
+
+                        doc.other_sections = consolidate_other_sections(doc.other_sections)
+                        _recalculate_missing_fields(doc, config.important_fields)
+
+                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
+
+                    if doc.meta.status == Status.OK:
+                        res.ok_count += 1
+                        logger.info("%sRow %d: ok", prefix, row.row_number)
+                    else:
+                        reason = doc.meta.reason or Reason.PARSE_FAILED
+                        res.unreachable_count += 1
+                        res.unreachable_by_reason[reason.value] = (
+                            res.unreachable_by_reason.get(reason.value, 0) + 1
+                        )
+                        res.unreachable_records.append(
+                            UnreachableRecord(
+                                input_row=row.row_number,
+                                url_as_given=row.raw,
+                                slug=slug,
+                                reason=reason,
+                                detail="Parse completed without extracting candidate name/headline",
+                            )
+                        )
+                        logger.info("%sRow %d: unreachable (%s)", prefix, row.row_number, reason.value)
+
+                else:
+                    reason = fetch_res.reason or Reason.UNEXPECTED_ERROR
+                    res.unreachable_count += 1
+                    res.unreachable_by_reason[reason.value] = (
+                        res.unreachable_by_reason.get(reason.value, 0) + 1
+                    )
+                    res.unreachable_records.append(
+                        UnreachableRecord(
+                            input_row=row.row_number,
+                            url_as_given=row.raw,
+                            slug=slug,
+                            reason=reason,
+                            detail=fetch_res.detail,
+                        )
+                    )
+                    doc = parse_profile(
+                        source_url=url,
+                        slug=slug,
+                        html=fetch_res.html,
+                        status=Status.UNREACHABLE,
+                        important_fields=config.important_fields,
+                        reason=reason.value,
+                    )
+                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
+                    logger.info("%sRow %d: unreachable (%s)", prefix, row.row_number, reason.value)
+
+                    if config.stop_on_block and reason == Reason.BLOCKED:
+                        logger.warning(
+                            "%sRow %d: Block detected! Halting run as stop_on_block=True",
+                            prefix,
+                            row.row_number,
+                        )
+                        res.stop_triggered = True
+                        if stop_event is not None:
+                            stop_event.set()
+
+            except Exception as row_exc:
+                logger.error(
+                    "%sRow %d: unexpected error during processing: %s",
+                    prefix,
+                    row.row_number,
+                    row_exc,
+                )
+                reason = Reason.UNEXPECTED_ERROR
+                res.unreachable_count += 1
+                res.unreachable_by_reason[reason.value] = (
+                    res.unreachable_by_reason.get(reason.value, 0) + 1
+                )
+                res.unreachable_records.append(
+                    UnreachableRecord(
+                        input_row=row.row_number,
+                        url_as_given=row.raw,
+                        slug=slug,
+                        reason=reason,
+                        detail=str(row_exc),
+                    )
+                )
+                doc = parse_profile(
+                    source_url=url,
+                    slug=slug,
+                    html=None,
+                    status=Status.UNREACHABLE,
+                    important_fields=config.important_fields,
+                    reason=reason.value,
+                )
+                write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
+
+            res.completed_rows += 1
+
+            if (
+                idx < num_rows - 1
+                and not res.stop_triggered
+                and not (stop_event and stop_event.is_set())
+            ):
+                delay = random.uniform(config.delay_seconds_min, config.delay_seconds_max)
+                logger.info("%sApplying polite delay of %.1fs before next profile...", prefix, delay)
+                sleep_fn(delay)
+    except KeyboardInterrupt:
+        res.interrupted = True
+        logger.warning(
+            "\n[!] Execution interrupted (Ctrl+C). Preserving extracted profiles & reports..."
+        )
+
+    return res
+
+
 def run_pipeline(
     config: ExtractorConfig,
     fetcher: Fetcher,
@@ -584,453 +1195,117 @@ def run_pipeline(
     profiles_dir.mkdir(parents=True, exist_ok=True)
 
     # --------------------------------------------------------------------------
-    # 4. Processing Loop Across Valid Candidate Rows
+    # 4. Processing Across Valid Candidate Rows (Single or Multi-Worker)
     # --------------------------------------------------------------------------
     interrupted = False
     completed_rows = 0
     try:
-        for idx, row in enumerate(valid_rows):
-            # If circuit breaker was triggered by a bot challenge, skip remaining rows
-            if stop_triggered:
-                not_processed_count += 1
-                logger.info("Row %d: skipped (pipeline stopped after block)", row.row_number)
-                continue
-
-            slug = row.slug or ""
-            url = row.normalized or ""
-            logger.info(
-                "Row %d: visiting candidate profile (%d of %d)...",
-                row.row_number,
-                idx + 1,
-                num_valid,
+        if config.workers <= 1 or num_valid <= 1:
+            worker_res = _process_candidate_batch(
+                rows=valid_rows,
+                config=config,
+                fetcher=fetcher,
+                filename_stems=filename_stems,
+                profiles_dir=profiles_dir,
+                sleep_fn=sleep_fn,
+                worker_idx=0,
+                total_workers=1,
             )
-            logger.debug("Row %d: candidate slug '%s'", row.row_number, slug)
+            ok_count += worker_res.ok_count
+            unreachable_count += worker_res.unreachable_count
+            for r_k, r_c in worker_res.unreachable_by_reason.items():
+                unreachable_by_reason[r_k] = unreachable_by_reason.get(r_k, 0) + r_c
+            unreachable_records.extend(worker_res.unreachable_records)
+            completed_rows += worker_res.completed_rows
+            not_processed_count += worker_res.not_processed_count
+            if worker_res.stop_triggered:
+                stop_triggered = True
+            if worker_res.interrupted:
+                interrupted = True
+                not_processed_count = skipped_by_limit + (num_valid - completed_rows)
+        else:
+            partitions = partition_workload(valid_rows, config.workers)
+            actual_workers = len(partitions)
+            logger.info(
+                "Spawning %d parallel workers across %d candidate rows (%s)...",
+                actual_workers,
+                num_valid,
+                ", ".join(f"Worker {i+1}: {len(p)} rows" for i, p in enumerate(partitions)),
+            )
+            stop_event = threading.Event()
 
-            try:
-                # Retrieve profile HTML via Playwright
-                fetch_res = fetcher.fetch(url)
+            auth_paths = [
+                get_worker_auth_path(config.auth_state_path, i, actual_workers)
+                for i in range(actual_workers)
+            ]
+            if isinstance(fetcher, PlaywrightFetcher):
+                ensure_worker_logins(auth_paths)
 
-                if fetch_res.status == Status.OK:
-                    # Parse DOM into structured ProfileDocument
-                    doc = parse_profile(
-                        source_url=url,
-                        slug=slug,
-                        html=fetch_res.html,
-                        status=Status.OK,
-                        important_fields=config.important_fields,
+            def _worker_task(w_idx: int, p_rows: list[InputRow]) -> WorkerResult:
+                if isinstance(fetcher, PlaywrightFetcher):
+                    w_auth = auth_paths[w_idx]
+                    w_fetcher: Fetcher = PlaywrightFetcher(
+                        auth_state_path=w_auth,
+                        headless=fetcher.headless,
+                        timeout_seconds=fetcher.timeout_ms / 1000.0,
+                        save_raw_html_dir=fetcher.save_raw_html_dir,
+                        max_scroll_steps=fetcher.max_scroll_steps,
+                        scroll_step_delay_ms=fetcher.scroll_step_delay_ms,
+                        about_wait_ms=fetcher.about_wait_ms,
+                        interactive_relogin=fetcher.interactive_relogin,
+                        block_images=fetcher.block_images,
                     )
-                    # Preserve the first-pass output as immutable input to a later
-                    # additive reconciliation. The legacy path below is retained.
-                    baseline_profile = doc.profile.model_copy(deep=True)
-
-                    # Deep crawling of sub-pages (Show all skills, education, experience).
-                    # Every sub-page fetch goes through the same block policy as the main
-                    # profile fetch and is paced with the same polite delay.
-                    if getattr(config, "deep_details", True) and fetch_res.html:
-                        main_html = fetch_res.html
-                        legacy_attempted_sections: set[str] = set()
-                        detail_specs = [
-                            (
-                                "skills",
-                                [
-                                    r"/details/skills/",
-                                    r"show all\s*(?:\d+)?\s*skills",
-                                    r"skills\s*\(\d+\)",
-                                ],
-                                parse_skills_details,
-                            ),
-                            (
-                                "education",
-                                [r"/details/education/", r"show all\s*(?:\d+)?\s*education"],
-                                parse_education_details,
-                            ),
-                            (
-                                "experience",
-                                [r"/details/experience/", r"show all\s*(?:\d+)?\s*experience"],
-                                parse_experience_details,
-                            ),
-                            (
-                                "certifications",
-                                [
-                                    r"/details/certifications/",
-                                    r"show all\s*(?:\d+)?\s*certifications",
-                                    r"licenses\s*(?:&|and)\s*certifications",
-                                ],
-                                parse_certifications_details,
-                            ),
-                            (
-                                "projects",
-                                [
-                                    r"/details/projects/",
-                                    r"show all\s*(?:\d+)?\s*projects",
-                                    r"projects\s*\(\d+\)",
-                                ],
-                                parse_projects_details,
-                            ),
-                            (
-                                "languages",
-                                [
-                                    r"/details/languages/",
-                                    r"show all\s*(?:\d+)?\s*languages",
-                                    r"languages\s*\(\d+\)",
-                                ],
-                                parse_languages_details,
-                            ),
-                        ]
-                        for section, patterns, parse_fn in detail_specs:
-                            if stop_triggered:
-                                break
-                            if not any(re.search(pat, main_html, re.I) for pat in patterns):
-                                continue
-                            legacy_attempted_sections.add(section)
-                            detail_url = f"https://www.linkedin.com/in/{slug}/details/{section}/"
-                            sleep_fn(
-                                random.uniform(config.delay_seconds_min, config.delay_seconds_max)
-                            )
-                            logger.info(
-                                "Row %d: unrolling full %s list...",
-                                row.row_number,
-                                section,
-                            )
-                            logger.debug(
-                                "Row %d: fetching subpage %s",
-                                row.row_number,
-                                detail_url,
-                            )
-                            try:
-                                detail_res = fetcher.fetch(detail_url)
-                            except KeyboardInterrupt:
-                                raise
-                            except Exception as detail_err:
-                                logger.warning(
-                                    "Row %d: could not fetch %s subpage: %s",
-                                    row.row_number,
-                                    section,
-                                    detail_err,
-                                )
-                                continue
-                            if detail_res.status != Status.OK:
-                                logger.warning(
-                                    "Row %d: %s subpage unreachable (%s)",
-                                    row.row_number,
-                                    section,
-                                    detail_res.reason.value if detail_res.reason else "unknown",
-                                )
-                                if config.stop_on_block and detail_res.reason == Reason.BLOCKED:
-                                    logger.warning(
-                                        "Row %d: Block detected on %s subpage! Halting run "
-                                        "as stop_on_block=True",
-                                        row.row_number,
-                                        section,
-                                    )
-                                    stop_triggered = True
-                                continue
-                            if not detail_res.html:
-                                continue
-
-                            # Preserve subpage raw text in doc.raw_text for recovery audit
-                            sub_soup = BeautifulSoup(detail_res.html, "lxml")
-                            for s_tag in sub_soup.find_all(
-                                ["script", "style", "noscript", "svg", "template"]
-                            ):
-                                s_tag.decompose()
-                            sub_text = (sub_soup.find("main") or sub_soup).get_text(
-                                separator="\n", strip=True
-                            )
-                            if sub_text:
-                                doc.raw_text = (
-                                    (doc.raw_text or "")
-                                    + f"\n\n--- Subpage: {section} ---\n"
-                                    + sub_text
-                                )
-
-                            deep_items = parse_fn(detail_res.html)
-                            current_items = getattr(doc.profile, section)
-                            current_count = (
-                                len(current_items)
-                                if isinstance(current_items, (list, tuple))
-                                else 0
-                            )
-                            if (
-                                isinstance(deep_items, (list, tuple))
-                                and len(deep_items) > 0
-                            ):
-                                if section == "skills":
-                                    # Skills are scalar labels, not rich records. Merge
-                                    # both sources instead of replacing the profile-page
-                                    # subset with a potentially incomplete details page.
-                                    merged_skills = _merge_skill_items(current_items, deep_items)
-                                    if len(merged_skills) > current_count:
-                                        logger.info(
-                                            "Row %d: merged %d skills (was %d; added %d from details page)",
-                                            row.row_number,
-                                            len(merged_skills),
-                                            current_count,
-                                            len(merged_skills) - current_count,
-                                        )
-                                        doc.profile.skills = merged_skills
-                                else:
-                                    deep_score = _count_field_richness(deep_items)
-                                    current_score = _count_field_richness(current_items)
-                                    if (
-                                        len(deep_items) >= current_count
-                                        or deep_score >= current_score
-                                    ):
-                                        logger.info(
-                                            "Row %d: unrolled %d total %s (was %d, score %d vs %d)",
-                                            row.row_number,
-                                            len(deep_items),
-                                            section,
-                                            current_count,
-                                            deep_score,
-                                            current_score,
-                                        )
-                                        setattr(doc.profile, section, deep_items)
-                        # ------------------------------------------------------------------
-                        # Additive recovery pass. The original profile parse and the
-                        # existing six known deep-page fetches have already run. This pass
-                        # only discovers additional same-profile detail/activity routes,
-                        # preserves unknown pages in raw_text + other_sections, and unions
-                        # new structured records. It never recursively follows subpage links.
-                        # ------------------------------------------------------------------
-                        _restore_profile_snapshot_additively(doc.profile, baseline_profile)
-
-                        if not stop_triggered:
-                            parser_by_section = {
-                                "skills": ("skills", parse_skills_details),
-                                "education": ("education", parse_education_details),
-                                "experience": ("experience", parse_experience_details),
-                                "certifications": ("certifications", parse_certifications_details),
-                                "licenses": ("certifications", parse_certifications_details),
-                                "licenses-and-certifications": (
-                                    "certifications", parse_certifications_details
-                                ),
-                                "projects": ("projects", parse_projects_details),
-                                "languages": ("languages", parse_languages_details),
-                            }
-                            legacy_aliases = {
-                                "licenses": "certifications",
-                                "licenses-and-certifications": "certifications",
-                            }
-                            legacy_attempted_normalized = {
-                                legacy_aliases.get(item, item)
-                                for item in legacy_attempted_sections
-                            }
-                            discovered_pages = (
-                                []
-                                if getattr(config, "disextra", False)
-                                else _discover_profile_detail_pages(main_html, url, slug)
-                            )
-                            profile_text, _ = _extract_supplemental_page_text(main_html, "profile")
-                            profile_text_norm = _normalised_text(profile_text)
-                            supplemental_attempts = 0
-
-                            for section, detail_url in discovered_pages:
-                                target_field = legacy_aliases.get(section, section)
-                                if target_field in legacy_attempted_normalized:
-                                    continue
-                                if supplemental_attempts >= MAX_SUPPLEMENTAL_DETAIL_PAGES:
-                                    logger.warning(
-                                        "Row %d: supplemental detail-page limit (%d) reached",
-                                        row.row_number,
-                                        MAX_SUPPLEMENTAL_DETAIL_PAGES,
-                                    )
-                                    break
-
-                                supplemental_attempts += 1
-                                sleep_fn(
-                                    random.uniform(
-                                        config.delay_seconds_min,
-                                        config.delay_seconds_max,
-                                    )
-                                )
-                                logger.info(
-                                    "Row %d: additive discovery fetching '%s'...",
-                                    row.row_number,
-                                    section,
-                                )
-                                try:
-                                    supplemental_res = fetcher.fetch(detail_url)
-                                except KeyboardInterrupt:
-                                    raise
-                                except Exception as supplemental_error:
-                                    logger.warning(
-                                        "Row %d: supplemental page '%s' failed: %s",
-                                        row.row_number,
-                                        section,
-                                        supplemental_error,
-                                    )
-                                    continue
-
-                                if supplemental_res.status != Status.OK:
-                                    logger.warning(
-                                        "Row %d: supplemental page '%s' unreachable (%s)",
-                                        row.row_number,
-                                        section,
-                                        supplemental_res.reason.value
-                                        if supplemental_res.reason else "unknown",
-                                    )
-                                    if (
-                                        config.stop_on_block
-                                        and supplemental_res.reason == Reason.BLOCKED
-                                    ):
-                                        logger.warning(
-                                            "Row %d: block detected on supplemental page '%s'; halting run",
-                                            row.row_number,
-                                            section,
-                                        )
-                                        stop_triggered = True
-                                        break
-                                    continue
-                                if not supplemental_res.html:
-                                    continue
-
-                                page_text, page_heading = _extract_supplemental_page_text(
-                                    supplemental_res.html, section
-                                )
-                                if not page_text:
-                                    continue
-                                page_norm = _normalised_text(page_text)
-                                # Fake fetchers, redirects, and stale LinkedIn links can
-                                # return the original profile page. Do not misclassify it
-                                # as a new section or append the whole profile a second time.
-                                if page_norm and profile_text_norm and (
-                                    page_norm == profile_text_norm
-                                    or page_norm in profile_text_norm
-                                ):
-                                    continue
-
-                                heading = page_heading or (
-                                    "Activity" if section == "recent-activity"
-                                    else " ".join(
-                                        part.capitalize()
-                                        for part in section.replace("_", "-").split("-")
-                                    )
-                                )
-                                doc.raw_text = _append_supplemental_raw(
-                                    doc.raw_text, heading, detail_url, page_text
-                                )
-
-                                if section == "about":
-                                    if not doc.profile.about:
-                                        doc.profile.about = page_text
-                                    continue
-
-                                parser_spec = parser_by_section.get(section)
-                                if parser_spec is not None:
-                                    field_name, parser_fn = parser_spec
-                                    supplemental_items = parser_fn(supplemental_res.html)
-                                    if supplemental_items:
-                                        current_items = getattr(doc.profile, field_name, None)
-                                        merged_items = _merge_collection_additively(
-                                            field_name, current_items, supplemental_items
-                                        )
-                                        setattr(doc.profile, field_name, merged_items)
-                                    continue
-
-                                # No dedicated parser? Preserve the page under Others.
-                                _append_other_section_additively(
-                                    doc.other_sections, heading, page_text
-                                )
-
-                        doc.other_sections = consolidate_other_sections(doc.other_sections)
-                        _recalculate_missing_fields(doc, config.important_fields)
-
-                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
-
-                    if doc.meta.status == Status.OK:
-                        ok_count += 1
-                        logger.info("Row %d: ok", row.row_number)
-                    else:
-                        # Fallback if parser could not identify candidate name/headline
-                        reason = doc.meta.reason or Reason.PARSE_FAILED
-                        unreachable_count += 1
-                        unreachable_by_reason[reason.value] = (
-                            unreachable_by_reason.get(reason.value, 0) + 1
-                        )
-                        unreachable_records.append(
-                            UnreachableRecord(
-                                input_row=row.row_number,
-                                url_as_given=row.raw,
-                                slug=slug,
-                                reason=reason,
-                                detail="Parser could not extract candidate name/headline from DOM",
-                            )
-                        )
-                        logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
-
+                elif isinstance(fetcher, FakeFetcher):
+                    w_fetcher = FakeFetcher(
+                        outcomes=dict(fetcher.outcomes),
+                        default_status=fetcher.default_status,
+                    )
                 else:
-                    # Retrieval failed (NOT_FOUND, NOT_VISIBLE, BLOCKED, TIMEOUT)
-                    reason = fetch_res.reason or Reason.UNEXPECTED_ERROR
-                    unreachable_count += 1
-                    unreachable_by_reason[reason.value] = (
-                        unreachable_by_reason.get(reason.value, 0) + 1
-                    )
-                    unreachable_records.append(
-                        UnreachableRecord(
-                            input_row=row.row_number,
-                            url_as_given=row.raw,
-                            slug=slug,
-                            reason=reason,
-                            detail=fetch_res.detail,
-                        )
-                    )
-                    # Persist unreachable stub document adhering to schema contract
-                    doc = parse_profile(
-                        source_url=url,
-                        slug=slug,
-                        html=fetch_res.html,
-                        status=Status.UNREACHABLE,
-                        important_fields=config.important_fields,
-                        reason=reason.value,
-                    )
-                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
-                    logger.info("Row %d: unreachable (%s)", row.row_number, reason.value)
+                    w_fetcher = fetcher
 
-                    # Circuit breaker: halt immediately upon security checkpoint
-                    if config.stop_on_block and reason == Reason.BLOCKED:
-                        logger.warning(
-                            "Row %d: Block detected! Halting run as stop_on_block=True",
-                            row.row_number,
-                        )
-                        stop_triggered = True
-
-            except Exception as row_exc:
-                # Isolate unexpected runtime exceptions so one candidate cannot kill the batch
-                logger.error(
-                    "Row %d: unexpected error during processing: %s",
-                    row.row_number,
-                    row_exc,
-                )
-                reason = Reason.UNEXPECTED_ERROR
-                unreachable_count += 1
-                unreachable_by_reason[reason.value] = unreachable_by_reason.get(reason.value, 0) + 1
-                unreachable_records.append(
-                    UnreachableRecord(
-                        input_row=row.row_number,
-                        url_as_given=row.raw,
-                        slug=slug,
-                        reason=reason,
-                        detail=str(row_exc),
+                try:
+                    return _process_candidate_batch(
+                        rows=p_rows,
+                        config=config,
+                        fetcher=w_fetcher,
+                        filename_stems=filename_stems,
+                        profiles_dir=profiles_dir,
+                        sleep_fn=sleep_fn,
+                        worker_idx=w_idx,
+                        total_workers=actual_workers,
+                        stop_event=stop_event,
                     )
-                )
-                doc = parse_profile(
-                    source_url=url,
-                    slug=slug,
-                    html=None,
-                    status=Status.UNREACHABLE,
-                    important_fields=config.important_fields,
-                    reason=reason.value,
-                )
-                write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
+                finally:
+                    if w_fetcher is not fetcher:
+                        try:
+                            w_fetcher.close()
+                        except Exception:
+                            pass
 
-            completed_rows += 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as executor:
+                futures = [
+                    executor.submit(_worker_task, idx, part)
+                    for idx, part in enumerate(partitions)
+                ]
+                results = [f.result() for f in futures]
 
-            # Polite pacing: random delay between min and max bounds (skip after last profile)
-            if idx < num_valid - 1 and not stop_triggered:
-                delay = random.uniform(config.delay_seconds_min, config.delay_seconds_max)
-                logger.info("Applying polite delay of %.1fs before next profile...", delay)
-                sleep_fn(delay)
+            for res in results:
+                ok_count += res.ok_count
+                unreachable_count += res.unreachable_count
+                for r_k, r_c in res.unreachable_by_reason.items():
+                    unreachable_by_reason[r_k] = unreachable_by_reason.get(r_k, 0) + r_c
+                unreachable_records.extend(res.unreachable_records)
+                completed_rows += res.completed_rows
+                not_processed_count += res.not_processed_count
+                if res.stop_triggered:
+                    stop_triggered = True
+                if res.interrupted:
+                    interrupted = True
+
+            if interrupted:
+                not_processed_count = skipped_by_limit + (num_valid - completed_rows)
+
+            unreachable_records.sort(key=lambda rec: rec.input_row)
 
     except KeyboardInterrupt:
         interrupted = True
@@ -1038,7 +1313,7 @@ def run_pipeline(
         # rows already counted as skipped after a block are not double-counted.
         not_processed_count = skipped_by_limit + (num_valid - completed_rows)
         logger.warning(
-            "\n[!] Execution interrupted (Ctrl+C). Preserving extracted profiles & reports..."
+            "\n[!] Execution interrupted (Ctrl+C). Preserving extracted profiles and reports..."
         )
     finally:
         # Guarantee browser shutdown and process cleanup

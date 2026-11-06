@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from profile_extractor.config import ExtractorConfig, load_config
 from profile_extractor.logging_setup import setup_logging
 from profile_extractor.models import (
+    ContactInfo,
     EducationItem,
     ExperienceItem,
     FetchResult,
@@ -79,6 +80,32 @@ class TestModels:
         assert deserialized["meta"]["slug"] == "jane-doe-12ab"
         assert deserialized["meta"]["status"] == "ok"
         assert deserialized["profile"]["headline"] == "Staff Software Engineer"
+
+    def test_contact_info_contract(self) -> None:
+        """Verify ContactInfo serialization inside ProfileDocument."""
+        meta = Meta(
+            source_url="https://www.linkedin.com/in/jane-doe/",
+            slug="jane-doe",
+            status=Status.OK,
+        )
+        ci = ContactInfo(
+            profile_url="https://www.linkedin.com/in/jane-doe",
+            email="jane@example.com",
+            phone="+1 555 1234",
+            websites=["https://github.com/janedoe"],
+            raw="Contact info text",
+        )
+        doc = ProfileDocument(meta=meta, profile=Profile(name="Jane Doe", contact_info=ci))
+        serialized = doc.to_serializable_dict()
+        assert "contact_info" in serialized["profile"]
+        assert serialized["profile"]["contact_info"]["email"] == "jane@example.com"
+        assert serialized["profile"]["contact_info"]["phone"] == "+1 555 1234"
+        assert serialized["profile"]["contact_info"]["websites"] == ["https://github.com/janedoe"]
+
+        # If contact_info is None, it should not appear in serialized profile dict
+        doc_no_ci = ProfileDocument(meta=meta, profile=Profile(name="Jane Doe", contact_info=None))
+        serialized_no_ci = doc_no_ci.to_serializable_dict()
+        assert "contact_info" not in serialized_no_ci["profile"]
 
     def test_unreachable_document_contract(self) -> None:
         """Verify unreachable doc has empty profile dict and empty other_sections."""

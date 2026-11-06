@@ -110,6 +110,7 @@ class ExtractorApp:
         self.fast_var = tk.BooleanVar(value=False)      # Single-page fast mode
         self.visible_var = tk.BooleanVar(value=False)   # Show Chromium browser
         self.prune_var = tk.BooleanVar(value=False)     # Clear old output files
+        self.workers_var = tk.IntVar(value=1)           # Default 1 worker (1 to 10)
 
         # Numeric Sliders
         self.scroll_steps_var = tk.IntVar(value=25)     # Default 25 (0 to 100)
@@ -261,6 +262,28 @@ class ExtractorApp:
         ttk.Label(
             left_col,
             text="Clears old JSON profiles from output directory before starting.",
+            style="Hint.TLabel",
+        ).pack(anchor=tk.W, padx=(20, 0), pady=(0, 6))
+
+        # Flare: Parallel Workers (--workers)
+        workers_frame = ttk.Frame(left_col)
+        workers_frame.pack(fill=tk.X, pady=(2, 0))
+        ttk.Label(
+            workers_frame,
+            text="Parallel Workers / Accounts:",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        workers_spin = ttk.Spinbox(
+            workers_frame,
+            from_=1,
+            to=10,
+            textvariable=self.workers_var,
+            width=5,
+        )
+        workers_spin.pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(
+            left_col,
+            text="Divides candidate workload across N parallel browsers with isolated logins.",
             style="Hint.TLabel",
         ).pack(anchor=tk.W, padx=(20, 0))
 
@@ -607,11 +630,14 @@ class ExtractorApp:
         step_time = (self.step_time_var.get())
         about_wait = (self.about_wait_var.get())
         polite_delay = float(self.polite_delay_var.get())
+        workers = self.workers_var.get()
 
         cmd.extend(["--scrollsteps", str(scroll_steps)])
         cmd.extend(["--steptime", str(step_time)])
         cmd.extend(["--aboutwait", str(about_wait)])
         cmd.extend(["--polite", f"{polite_delay:.1f}"])
+        if workers > 1:
+            cmd.extend(["--workers", str(workers)])
 
         # Reset per-run tracking flags
         self._last_run_had_zero_ok = False
@@ -785,6 +811,13 @@ class ExtractorApp:
                 auth_removed = True
             except Exception as e:
                 self._log_line(f"[WARNING] Could not delete {auth_file}: {e}\n", tag="warning")
+
+        if auth_file.parent.exists():
+            for w_file in auth_file.parent.glob("state_worker_*.json"):
+                try:
+                    w_file.unlink()
+                except Exception:
+                    pass
 
         # 2. Remove remembered state file
         state_removed = False

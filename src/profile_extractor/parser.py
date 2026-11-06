@@ -29,12 +29,14 @@ Module Communications:
 
 import re
 from collections.abc import Sequence
+from urllib.parse import parse_qs, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import (
     CertificationItem,
+    ContactInfo,
     EducationItem,
     ExperienceItem,
     LanguageItem,
@@ -921,6 +923,254 @@ def parse_languages_details(html: str) -> list[LanguageItem]:
     return results
 
 
+def _clean_external_website_url(raw_href: str) -> str | None:
+    """Extract clean target URL, unwrapping LinkedIn redirect parameters if present."""
+    href = raw_href.strip()
+    if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+        return None
+    try:
+        parsed = urlsplit(href)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        # If wrapped in linkedin redirect: https://www.linkedin.com/redir/redirect?url=...
+        if host == "linkedin.com" and "redirect" in parsed.path:
+            query = parse_qs(parsed.query)
+            target = query.get("url", [None])[0]
+            if target:
+                return _clean_external_website_url(target)
+        if (host in {"linkedin.com", "maps.google.com", "google.com"}) and "maps" in href:
+            return None
+        if host == "linkedin.com":
+            return None
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+        return href
+    except Exception:
+        return None
+
+
+def parse_contact_info(html: str) -> ContactInfo | None:
+    """Parse contact info from LinkedIn contact overlay modal or profile DOM.
+
+    Extracts vanity/profile URL, email address, phone numbers, websites, address,
+    birthday, connection date, and twitter handles.
+    """
+    if not html or not html.strip():
+        return None
+
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all(["script", "style", "noscript", "svg", "template"]):
+        tag.decompose()
+
+    # Locate modal container if present; otherwise fallback to whole document
+    modal = (
+        soup.select_one(
+            '[role="dialog"], .artdeco-modal[role="dialog"], .artdeco-modal, '
+            'section.pv-contact-info, .pv-profile-section__section-info'
+        )
+        or soup.select_one('#artdeco-modal-outlet:has([role="dialog"]), #artdeco-modal-outlet:has(.artdeco-modal)')
+        or soup.find("main")
+        or soup
+    )
+    if len(modal.get_text(strip=True)) < 5:
+        modal = soup.find("main") or soup
+
+    raw_text = modal.get_text(separator="\n", strip=True)
+
+    # Initialize extracted fields
+    profile_url: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    websites: list[str] = []
+    twitter: str | None = None
+    birthday: str | None = None
+    connected: str | None = None
+
+    def _text_content(node: Tag | None) -> str:
+        if node is None:
+            return ""
+        return " ".join(node.get_text(" ", strip=True).split())
+
+    sections = modal.select(
+        "section.pv-contact-info__contact-type, div.pv-contact-info__contact-type, "
+        "div.pv-profile-section__section-info > section"
+    )
+    if not sections:
+        sections = [
+            sec
+            for sec in modal.find_all(["section", "div"])
+            if isinstance(sec, Tag) and sec.find(["h1", "h2", "h3", "h4", "header"])
+        ]
+
+    for sec in sections:
+        if not isinstance(sec, Tag):
+            continue
+        header_tag = sec.find(["h1", "h2", "h3", "h4", "header"])
+        header_text = _text_content(header_tag).lower() if isinstance(header_tag, Tag) else ""
+        cls_val = sec.get("class")
+        if isinstance(cls_val, list):
+            classes = " ".join(str(c) for c in cls_val)
+        else:
+            classes = str(cls_val or "")
+        classes_lower = classes.lower()
+
+        # Vanity URL / Profile link
+        if "ci-vanity-url" in classes_lower or any(
+            k in header_text for k in ("your profile", "profile")
+        ):
+            link = sec.find("a", href=True)
+            if isinstance(link, Tag) and not profile_url:
+                candidate = str(link.get("href") or "").strip()
+                if "linkedin.com/in/" in candidate:
+                    profile_url = candidate
+
+        # Email
+        if "ci-email" in classes_lower or "email" in header_text:
+            mail_link = sec.find("a", href=lambda h: bool(h and str(h).startswith("mailto:")))
+            if isinstance(mail_link, Tag) and not email:
+                raw_href = str(mail_link.get("href") or "")
+                email = raw_href.removeprefix("mailto:").split("?")[0].strip()
+            if not email:
+                text = _text_content(sec)
+                match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+                if match:
+                    email = match.group(0).strip()
+
+        # Phone
+        if "ci-phone" in classes_lower or "phone" in header_text or "mobile" in header_text:
+            tel_link = sec.find("a", href=lambda h: bool(h and str(h).startswith("tel:")))
+            if isinstance(tel_link, Tag) and not phone:
+                phone = str(tel_link.get("href") or "").removeprefix("tel:").strip()
+            if not phone:
+                ci_box = sec.select_one(".pv-contact-info__ci-container") or sec
+                lines = [
+                    line.strip()
+                    for line in ci_box.get_text("\n", strip=True).splitlines()
+                    if line.strip() and line.lower() != header_text
+                ]
+                if lines:
+                    phone = " ".join(lines)
+
+        # Websites
+        if "ci-websites" in classes_lower or "website" in header_text:
+            for a in sec.find_all("a", href=True):
+                if isinstance(a, Tag):
+                    clean_url = _clean_external_website_url(str(a.get("href") or ""))
+                    if clean_url and clean_url not in websites:
+                        websites.append(clean_url)
+
+        # Address
+        if "ci-address" in classes_lower or "address" in header_text:
+            ci_box = sec.select_one(".pv-contact-info__ci-container") or sec
+            lines = [
+                line.strip()
+                for line in ci_box.get_text("\n", strip=True).splitlines()
+                if line.strip() and line.lower() != header_text
+            ]
+            if lines and not address:
+                address = ", ".join(lines)
+
+        # Birthday
+        if "ci-birthday" in classes_lower or "birthday" in header_text:
+            ci_box = sec.select_one(".pv-contact-info__ci-container") or sec
+            lines = [
+                line.strip()
+                for line in ci_box.get_text("\n", strip=True).splitlines()
+                if line.strip() and line.lower() != header_text
+            ]
+            if lines and not birthday:
+                birthday = " ".join(lines)
+
+        # Connected
+        if "ci-connected" in classes_lower or "connected" in header_text:
+            ci_box = sec.select_one(".pv-contact-info__ci-container") or sec
+            lines = [
+                line.strip()
+                for line in ci_box.get_text("\n", strip=True).splitlines()
+                if line.strip() and line.lower() != header_text
+            ]
+            if lines and not connected:
+                connected = " ".join(lines)
+
+        # Twitter
+        if "ci-twitter" in classes_lower or "twitter" in header_text:
+            t_link = sec.find("a", href=True)
+            if isinstance(t_link, Tag) and not twitter:
+                twitter = str(t_link.get("href") or "").strip()
+            elif not twitter:
+                t_text = _text_content(sec)
+                for part in t_text.split():
+                    if part.startswith("@"):
+                        twitter = part
+                        break
+
+    # Strategy 2: Global heuristics across modal for anything missed
+    if not email:
+        mail_link = modal.find("a", href=lambda h: bool(h and str(h).startswith("mailto:")))
+        if isinstance(mail_link, Tag):
+            email = str(mail_link.get("href") or "").removeprefix("mailto:").split("?")[0].strip()
+        else:
+            match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", raw_text)
+            if match:
+                email = match.group(0).strip()
+
+    if not phone:
+        tel_link = modal.find("a", href=lambda h: bool(h and str(h).startswith("tel:")))
+        if isinstance(tel_link, Tag):
+            phone = str(tel_link.get("href") or "").removeprefix("tel:").strip()
+
+    if not profile_url:
+        prof_link = modal.find(
+            "a",
+            href=lambda h: bool(
+                h and "linkedin.com/in/" in str(h) and "/overlay/" not in str(h)
+            ),
+        )
+        if isinstance(prof_link, Tag):
+            profile_url = str(prof_link.get("href") or "").strip()
+
+    if not twitter:
+        tw_link = modal.find(
+            "a",
+            href=lambda h: bool(h and ("twitter.com/" in str(h) or "x.com/" in str(h))),
+        )
+        if isinstance(tw_link, Tag):
+            twitter = str(tw_link.get("href") or "").strip()
+
+    if not websites:
+        for a in modal.find_all("a", href=True):
+            if isinstance(a, Tag):
+                clean_url = _clean_external_website_url(str(a.get("href") or ""))
+                if clean_url and clean_url not in websites:
+                    websites.append(clean_url)
+
+    has_contact_data = any([
+        profile_url,
+        email,
+        phone,
+        address,
+        websites,
+        twitter,
+        birthday,
+        connected,
+    ])
+    if not has_contact_data:
+        if not re.search(r"\b(contact|email|phone|website|address)\b", raw_text, re.I):
+            return None
+
+    return ContactInfo(
+        profile_url=profile_url,
+        email=email,
+        phone=phone,
+        address=address,
+        websites=websites or None,
+        twitter=twitter,
+        birthday=birthday,
+        connected=connected,
+        raw=raw_text,
+    )
+
+
 def parse_profile(
     source_url: str,
     slug: str,
@@ -1294,6 +1544,7 @@ def parse_profile(
     headline = _clean_text(headline) if headline else None
     location = _clean_text(location) if location else None
     about = _clean_text(about) if about else None
+    initial_contact_info = parse_contact_info(html) if html else None
 
     profile = Profile(
         name=name,
@@ -1306,6 +1557,7 @@ def parse_profile(
         certifications=_dedupe_certifications(certifications or []),
         projects=projects,
         languages=languages,
+        contact_info=initial_contact_info,
     )
 
     # --------------------------------------------------------------------------

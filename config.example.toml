@@ -25,6 +25,11 @@ page_timeout_seconds = 30.0
 # Maximum profiles to process in a single run (null for all rows)
 max_profiles = 0
 
+# Number of concurrent browser workers (1 to 10, default: 1)
+# Workload is partitioned fairly across workers (e.g. 13 candidates / 3 workers -> 5, 4, 4).
+# Each extra worker operates with an isolated account (.auth/state_worker_N.json).
+workers = 1
+
 # Playwright browser mode
 headless = true
 

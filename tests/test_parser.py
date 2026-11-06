@@ -279,3 +279,110 @@ class TestParser:
         assert exp.title == "Staff Engineer"
         assert exp.company == "Acme Corp"
         assert "Jan 2020" in (exp.dates or "")
+
+    def test_parse_contact_info_modal(self) -> None:
+        """Verify contact overlay modal parsing with all attributes."""
+        from profile_extractor.parser import parse_contact_info
+
+        modal_html = """
+        <div class="artdeco-modal" role="dialog" aria-labelledby="pv-contact-info">
+          <div class="artdeco-modal__header">
+            <h1 id="pv-contact-info">Rohit Chauhan</h1>
+          </div>
+          <div class="artdeco-modal__content">
+            <section class="pv-contact-info__contact-type ci-vanity-url">
+              <h3 class="pv-contact-info__header">Your Profile</h3>
+              <div class="pv-contact-info__ci-container">
+                <a class="pv-contact-info__contact-link" href="https://www.linkedin.com/in/rohit-chauhan-464b15262">
+                  linkedin.com/in/rohit-chauhan-464b15262
+                </a>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-email">
+              <h3 class="pv-contact-info__header">Email</h3>
+              <div class="pv-contact-info__ci-container">
+                <a class="pv-contact-info__contact-link" href="mailto:rohit@example.com">
+                  rohit@example.com
+                </a>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-phone">
+              <h3 class="pv-contact-info__header">Phone</h3>
+              <div class="pv-contact-info__ci-container">
+                <span class="t-14 t-black t-normal">+91 9876543210</span>
+                <span class="t-14 t-black--light t-normal"> (Mobile)</span>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-websites">
+              <h3 class="pv-contact-info__header">Websites</h3>
+              <div class="pv-contact-info__ci-container">
+                <ul>
+                  <li>
+                    <a href="https://www.linkedin.com/redir/redirect?url=https%3A%2F%2Fgithub%2Ecom%2Frohit&amp;urlhash=1234">
+                      github.com/rohit
+                    </a>
+                  </li>
+                  <li>
+                    <a href="https://myportfolio.dev">Portfolio</a>
+                  </li>
+                </ul>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-address">
+              <h3 class="pv-contact-info__header">Address</h3>
+              <div class="pv-contact-info__ci-container">
+                <span>Noida, Uttar Pradesh, India</span>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-birthday">
+              <h3 class="pv-contact-info__header">Birthday</h3>
+              <div class="pv-contact-info__ci-container">
+                <span>January 15</span>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-connected">
+              <h3 class="pv-contact-info__header">Connected</h3>
+              <div class="pv-contact-info__ci-container">
+                <span>November 4, 2026</span>
+              </div>
+            </section>
+            <section class="pv-contact-info__contact-type ci-twitter">
+              <h3 class="pv-contact-info__header">Twitter</h3>
+              <div class="pv-contact-info__ci-container">
+                <a href="https://twitter.com/rohit_dev">@rohit_dev</a>
+              </div>
+            </section>
+          </div>
+        </div>
+        """
+        ci = parse_contact_info(modal_html)
+        assert ci is not None
+        assert ci.email == "rohit@example.com"
+        assert "+91 9876543210" in (ci.phone or "")
+        assert ci.profile_url == "https://www.linkedin.com/in/rohit-chauhan-464b15262"
+        assert ci.address == "Noida, Uttar Pradesh, India"
+        assert ci.birthday == "January 15"
+        assert ci.connected == "November 4, 2026"
+        assert ci.twitter == "https://twitter.com/rohit_dev"
+        assert ci.websites == ["https://github.com/rohit", "https://myportfolio.dev"]
+        assert "Contact Info" in ci.raw or "Rohit Chauhan" in ci.raw
+
+    def test_parse_contact_info_empty_and_fallback(self) -> None:
+        """Verify empty HTML returns None, and raw fallback detects emails/phone."""
+        from profile_extractor.parser import parse_contact_info
+
+        assert parse_contact_info("") is None
+        assert parse_contact_info("<html><body><div>Just some content</div></body></html>") is None
+
+        fallback_html = """
+        <div role="dialog">
+            <h2>Contact Info</h2>
+            <p>Reach me at contact@company.org or tel:+123456789</p>
+            <a href="mailto:contact@company.org">Email</a>
+            <a href="tel:+123456789">Call</a>
+        </div>
+        """
+        ci = parse_contact_info(fallback_html)
+        assert ci is not None
+        assert ci.email == "contact@company.org"
+        assert ci.phone == "+123456789"

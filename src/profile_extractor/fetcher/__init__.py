@@ -26,7 +26,12 @@ from collections.abc import Mapping
 from typing import Protocol
 
 from profile_extractor.fetcher.detection import detect_outcome
-from profile_extractor.fetcher.login import is_session_expired, run_interactive_login
+from profile_extractor.fetcher.login import (
+    ensure_worker_logins,
+    get_worker_auth_path,
+    is_session_expired,
+    run_interactive_login,
+)
 from profile_extractor.fetcher.playwright_fetcher import PlaywrightFetcher
 from profile_extractor.models import FetchResult, Reason, Status
 from profile_extractor.urls import extract_slug
@@ -93,6 +98,8 @@ __all__ = [
     "Fetcher",
     "PlaywrightFetcher",
     "detect_outcome",
+    "ensure_worker_logins",
+    "get_worker_auth_path",
     "is_session_expired",
     "run_interactive_login",
 ]

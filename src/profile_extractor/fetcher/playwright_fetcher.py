@@ -37,8 +37,10 @@ from playwright.sync_api import (
     Browser,
     BrowserContext,
     Playwright,
-    TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
+)
+from playwright.sync_api import (
+    TimeoutError as PlaywrightTimeoutError,
 )
 
 from profile_extractor.fetcher.detection import detect_outcome
@@ -440,6 +442,43 @@ class PlaywrightFetcher:
                             self.about_wait_ms / 1000.0,
                         )
 
+                    # If this is a contact overlay subpage, trigger and wait for the modal dialog to hydrate
+                    if "/overlay/contact-info" in url:
+                        try:
+                            # 1. Trigger open if not already open
+                            page.evaluate("""() => {
+                                const dialog = document.querySelector('[role="dialog"]');
+                                if (dialog && (dialog.innerText || '').length > 20) return;
+                                const link = document.querySelector(
+                                    '#top-card-text-details-contact-info, ' +
+                                    'a[href*="/overlay/contact-info"], ' +
+                                    'a[id*="contact-info"]'
+                                );
+                                if (link) {
+                                    link.click();
+                                    return;
+                                }
+                                const allLinks = Array.from(document.querySelectorAll('a, button'));
+                                const match = allLinks.find(el => (el.innerText || '').trim().toLowerCase() === 'contact info');
+                                if (match) match.click();
+                            }""")
+                            # 2. Wait for modal dialog to hydrate with contact info content
+                            page.wait_for_function(
+                                """() => {
+                                    const modal = document.querySelector(
+                                        '[role="dialog"], .artdeco-modal, section.pv-contact-info, #pv-contact-info'
+                                    );
+                                    if (!modal) return false;
+                                    const txt = (modal.innerText || modal.textContent || '').toLowerCase();
+                                    return txt.includes('contact') || txt.includes('email') || txt.includes('phone') || txt.includes('website') || txt.includes('profile');
+                                }""",
+                                timeout=min(self.timeout_ms, 4000),
+                            )
+                        except PlaywrightTimeoutError:
+                            logger.debug("Contact info modal did not appear within 4s; continuing.")
+                        except Exception as modal_err:
+                            logger.debug("Error while waiting for contact info modal: %s", modal_err)
+
                 # Capture profile cards before the first scroll. We also capture after
                 # each scroll/settle step because LinkedIn may virtualize cards that
                 # have moved out of the viewport. Only reading page.content() at the
@@ -455,7 +494,10 @@ class PlaywrightFetcher:
                 consecutive_at_bottom = 0
                 previous_card_text_length: int | None = None
                 stable_bottom_samples = 0
-                for _ in range(self.max_scroll_steps):
+                is_contact_overlay = "/overlay/contact-info" in url
+                effective_scroll_steps = 1 if is_contact_overlay else self.max_scroll_steps
+
+                for _ in range(effective_scroll_steps):
                     scroll_info = page.evaluate("""() => {
                         const m = document.querySelector('main')
                             || document.scrollingElement
@@ -511,28 +553,45 @@ class PlaywrightFetcher:
                             stable_bottom_samples = 0
                             previous_card_text_length = None
 
-                if not reached_bottom and self.max_scroll_steps > 0:
+                if is_contact_overlay:
+                    reached_bottom = True
+
+                if not reached_bottom and effective_scroll_steps > 0:
                     logger.warning(
                         "Page scrolling reached safety limit (%d steps) before confirming bottom; "
                         "some dynamic lazy-loaded sections may be incomplete.",
-                        self.max_scroll_steps,
+                        effective_scroll_steps,
                     )
 
                 # --------------------------------------------------------------
                 # Systematic Content Expansion:
                 # Clicks all inline '...see more' / 'show more' controls to un-truncate
                 # role descriptions, About text, and project details in place.
+                # Strictly scoped to main and modal containers to avoid clicking
+                # global navigation headers or third-party app drawers.
                 # --------------------------------------------------------------
                 try:
                     expanded_count = page.evaluate("""() => {
-                        const buttons = Array.from(document.querySelectorAll(
-                            'button.inline-show-more-text__button, ' +
-                            'button.show-more-less-html__button, ' +
-                            'button[aria-expanded="false"], ' +
-                            'button, [role="button"]'
-                        ));
+                        const containers = [
+                            document.querySelector('[role="dialog"]'),
+                            document.querySelector('main')
+                        ].filter(Boolean);
+
+                        const buttons = [];
+                        for (const c of containers) {
+                            buttons.push(...Array.from(c.querySelectorAll(
+                                'button.inline-show-more-text__button, ' +
+                                'button.show-more-less-html__button, ' +
+                                '.inline-show-more-text button, ' +
+                                '.pv-profile-section button'
+                            )));
+                        }
+
                         let clicked = 0;
                         for (const b of buttons) {
+                            if (b.closest('nav, header, #global-nav, #global-nav-search, .global-nav, aside, footer')) {
+                                continue;
+                            }
                             const text = (b.innerText || b.textContent || "").trim().toLowerCase();
                             const aria = (b.getAttribute("aria-label") || "").toLowerCase();
                             const cls = (b.className || "").toString().toLowerCase();
@@ -544,7 +603,6 @@ class PlaywrightFetcher:
                                 text === "... more" ||
                                 text === "see more" ||
                                 text === "show more" ||
-                                text === "more" ||
                                 aria.includes("see more") ||
                                 aria.includes("show more");
 
