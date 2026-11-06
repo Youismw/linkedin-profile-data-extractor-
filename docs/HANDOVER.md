@@ -98,3 +98,18 @@ If internet connectivity is unstable or LinkedIn is unreachable during the live 
 .\.venv\Scripts\python.exe -m profile_extractor run --input input/demo_profiles.xlsx --output output --fake
 ```
 *This demonstrates the full pipeline, report generation, and file writing instantaneously without any network dependency.*
+
+---
+
+## 6. Critical Maintenance Guideline: Prioritize Server-Driven UI (SDUI) First
+
+> [!IMPORTANT]
+> **#1 Debugging Rule for Future Maintainers**: If data extraction fails, locators time out, or a modal visibly opens in Chromium but doesn't write to JSON, **always look at the DOM from the SDUI angle first**.
+
+- **The Lesson Learned**: LinkedIn has replaced legacy Artdeco components (`#artdeco-modal-outlet`, `.artdeco-modal`, `[role="dialog"]`, `section.pv-contact-info`) with Server-Driven UI (SDUI). Multiple engineering days were lost across this project trying to tweak click delays and scroll loops when the actual issue was querying deprecated Artdeco classes that LinkedIn stopped rendering.
+- **Actionable Diagnostic Rule**:
+  1. Inspect `data-sdui-screen` attributes first (e.g. `com.linkedin.sdui.flagshipnav.profile.ProfileContactDetailsOverlay`).
+  2. Inspect `id="com.linkedin.sdui.profile.card.*"` and `componentkey` attributes.
+  3. Inspect `data-testid` (e.g. `data-testid="dialog-content"`).
+  4. Never assume standard `[role="dialog"]` or `.artdeco-*` CSS classes exist on modern LinkedIn views.
+  5. Always construct locators and parsers targeting SDUI structures first, keeping legacy selectors only as secondary fallbacks.

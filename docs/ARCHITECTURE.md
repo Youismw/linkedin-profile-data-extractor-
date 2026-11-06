@@ -93,6 +93,46 @@ Automated credential injection was evaluated during architecture design and **ex
 
 ---
 
+## Critical Engineering Directive: Prioritize LinkedIn Server-Driven UI (SDUI) First
+
+> [!IMPORTANT]
+> **Core Debugging Rule**: Whenever diagnosing missing fields, failed extractions, broken locators, or modals that visibly open in Chromium but fail to write to JSON, **always look at the DOM from the SDUI angle first**.
+
+### 1. Context & Lessons Learned (Why This Rule Exists)
+On three separate occasions during this project, entire engineering days were lost chasing red herrings:
+- Investigating scroll timing, hydration delays, and synthetic mouse clicks.
+- Attempting to force legacy Artdeco selectors (`#artdeco-modal-outlet`, `.artdeco-modal`, `[role="dialog"]`, `section.pv-contact-info`) to match modern page states.
+- Diagnosing why elements visibly appeared on screen in Chromium but were dropped or returned `None` by the Python parser.
+
+In every case, the root cause was the same: **LinkedIn has aggressively migrated its web frontend to Server-Driven UI (SDUI)**. The legacy Artdeco containers, IDs, and ARIA roles have been deprecated and replaced with SDUI component hierarchies.
+
+### 2. Characteristics of LinkedIn's SDUI Framework
+Modern LinkedIn desktop views render components dynamically driven by backend SDUI schemas:
+- **Screens & Overlays**: Identified by `data-sdui-screen` (e.g., `data-sdui-screen="com.linkedin.sdui.flagshipnav.profile.ProfileContactDetailsOverlay"`).
+- **Cards & Sections**: Identified by component IDs starting with `com.linkedin.sdui.profile.card.*` (e.g., `id="com.linkedin.sdui.profile.card.ref...ContactInfoDetailSection"`).
+- **Component Keys & Test IDs**: Identified by `componentkey` (e.g., `componentkey="SearchResults_SearchTyahInputRef"`) and `data-testid` (e.g., `data-testid="dialog-content"`, `data-testid="popover-floating"`).
+- **Lack of Legacy Semantic Roles**: Modern SDUI modals frequently omit `role="dialog"`, do not use `#artdeco-modal-outlet`, and nest content inside custom `div` wrappers headed by `header#dialog-header`.
+
+### 3. The Mandatory "SDUI-First" Diagnostic Protocol
+When debugging or updating any locator, parser, or extractor:
+1. **Never Assume Legacy Selectors**: Do not start by querying `.artdeco-*`, `#artdeco-modal-outlet`, `[role="dialog"]`, or `section.pv-*`.
+2. **Inspect SDUI Attributes First**:
+   - Run DOM queries for `[data-sdui-screen]`.
+   - Run DOM queries for `[id^="com.linkedin.sdui."]`.
+   - Run DOM queries for `[componentkey]` and `[data-testid]`.
+3. **Structure Queries SDUI-First with Legacy Fallbacks**:
+   Always place SDUI selectors as the primary target in locators and BeautifulSoup queries, keeping legacy selectors only as secondary fallbacks for older cached page variants:
+   ```python
+   # Correct: SDUI first, legacy fallback second
+   modal = soup.select_one(
+       '[data-sdui-screen*="ContactDetailsOverlay"], '
+       '[id*="ContactInfoDetailSection"], '
+       'div:has(> header#dialog-header)'
+   ) or soup.select_one('#artdeco-modal-outlet, section.pv-contact-info')
+   ```
+
+---
+
 ## Target Production Transition Plan
 
 ```mermaid

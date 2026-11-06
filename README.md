@@ -414,6 +414,19 @@ $env:PYTHONPATH="src"
 .\.venv\Scripts\python.exe -m pyright src tests
 ```
 
+## Debugging Directive: Look at DOM Issues from the SDUI Angle First
+
+> **CRITICAL LESSON LEARNED**: Whenever diagnosing missing extraction data, failing locators, or modals that visibly render in the browser but fail to extract into JSON, **always inspect the DOM from the Server-Driven UI (SDUI) angle first**.
+>
+> Modern LinkedIn desktop has systematically migrated from legacy Artdeco containers (`#artdeco-modal-outlet`, `.artdeco-modal`, `[role="dialog"]`, `section.pv-contact-info`) to SDUI components:
+> - `data-sdui-screen` (e.g., `com.linkedin.sdui.flagshipnav.profile.ProfileContactDetailsOverlay`)
+> - `id="com.linkedin.sdui.profile.card.*"`
+> - `componentkey` and `data-testid` (e.g., `data-testid="dialog-content"`, `header#dialog-header`)
+>
+> Days of debugging have been lost attempting to tweak click timings or scroll limits when the actual issue was querying deprecated Artdeco classes that LinkedIn no longer renders. Always prioritize SDUI attributes first, using legacy selectors only as fallback.
+
+---
+
 ## Recording-driven capture hardening (current working version)
 
 The Playwright fetcher now snapshots profile-card containers before scrolling and
