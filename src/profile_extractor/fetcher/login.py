@@ -144,6 +144,7 @@ def run_interactive_login(auth_state_path: Path | str, worker_label: str = "") -
 
         start_time = time.time()
         timeout_seconds = 600  # 10 minutes maximum for manual 2FA
+        captured_live_session = False
 
         while time.time() - start_time < timeout_seconds:
             if user_cancelled.is_set():
@@ -160,6 +161,7 @@ def run_interactive_login(auth_state_path: Path | str, worker_label: str = "") -
 
             # Check if user pressed Enter in terminal
             if user_pressed_enter.is_set():
+                captured_live_session = True
                 break
 
             # Auto-detect login success via cookies and URL
@@ -179,6 +181,7 @@ def run_interactive_login(auth_state_path: Path | str, worker_label: str = "") -
 
                 if has_auth and (on_app_page or not_on_auth_gate):
                     print("\n[OK] Detected active LinkedIn login session in browser!")
+                    captured_live_session = True
                     page.wait_for_timeout(3000)  # Settle companion cookies
                     try:
                         context.storage_state(path=str(target_path))
@@ -192,7 +195,11 @@ def run_interactive_login(auth_state_path: Path | str, worker_label: str = "") -
 
         # Capture complete session cookies and localStorage before closing browser
         try:
-            if not target_path.is_file() or is_session_expired(target_path):
+            if not captured_live_session:
+                cookie_names = {c.get("name") for c in context.cookies() if c.get("name")}
+                if "li_at" in cookie_names:
+                    captured_live_session = True
+            if captured_live_session:
                 context.storage_state(path=str(target_path))
         except Exception as err:
             if not target_path.is_file():
@@ -206,8 +213,8 @@ def run_interactive_login(auth_state_path: Path | str, worker_label: str = "") -
             except Exception:
                 pass
 
-    # Verify that an actual authenticated session cookie ('li_at') was captured
-    if is_session_expired(target_path):
+    # Verify that an actual authenticated session cookie ('li_at') was captured in this login run
+    if not captured_live_session or is_session_expired(target_path):
         target_path.unlink(missing_ok=True)
         print("\n[!] Warning: No authenticated LinkedIn session ('li_at' cookie) was detected.")
         print("    You must finish signing in before the browser is closed.")

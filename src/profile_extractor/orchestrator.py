@@ -34,6 +34,7 @@ Module Communications:
 
 import concurrent.futures
 import hashlib
+import json
 import random
 import re
 import threading
@@ -969,12 +970,14 @@ def _process_candidate_batch(
                         doc.other_sections = consolidate_other_sections(doc.other_sections)
                         _recalculate_missing_fields(doc, config.important_fields)
 
-                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
-
                     if doc.meta.status == Status.OK:
+                        write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
                         res.ok_count += 1
                         logger.info("%sRow %d: ok", prefix, row.row_number)
                     else:
+                        _remove_stale_unreachable_json(
+                            profiles_dir, filename_stems.get(row.row_number) or slug
+                        )
                         reason = doc.meta.reason or Reason.PARSE_FAILED
                         res.unreachable_count += 1
                         res.unreachable_by_reason[reason.value] = (
@@ -992,6 +995,9 @@ def _process_candidate_batch(
                         logger.info("%sRow %d: unreachable (%s)", prefix, row.row_number, reason.value)
 
                 else:
+                    _remove_stale_unreachable_json(
+                        profiles_dir, filename_stems.get(row.row_number) or slug
+                    )
                     reason = fetch_res.reason or Reason.UNEXPECTED_ERROR
                     res.unreachable_count += 1
                     res.unreachable_by_reason[reason.value] = (
@@ -1006,15 +1012,6 @@ def _process_candidate_batch(
                             detail=fetch_res.detail,
                         )
                     )
-                    doc = parse_profile(
-                        source_url=url,
-                        slug=slug,
-                        html=fetch_res.html,
-                        status=Status.UNREACHABLE,
-                        important_fields=config.important_fields,
-                        reason=reason.value,
-                    )
-                    write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
                     logger.info("%sRow %d: unreachable (%s)", prefix, row.row_number, reason.value)
 
                     if config.stop_on_block and reason == Reason.BLOCKED:
@@ -1028,6 +1025,9 @@ def _process_candidate_batch(
                             stop_event.set()
 
             except Exception as row_exc:
+                _remove_stale_unreachable_json(
+                    profiles_dir, filename_stems.get(row.row_number) or slug
+                )
                 logger.error(
                     "%sRow %d: unexpected error during processing: %s",
                     prefix,
@@ -1048,15 +1048,6 @@ def _process_candidate_batch(
                         detail=str(row_exc),
                     )
                 )
-                doc = parse_profile(
-                    source_url=url,
-                    slug=slug,
-                    html=None,
-                    status=Status.UNREACHABLE,
-                    important_fields=config.important_fields,
-                    reason=reason.value,
-                )
-                write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
 
             res.completed_rows += 1
 
@@ -1075,6 +1066,21 @@ def _process_candidate_batch(
         )
 
     return res
+
+
+def _remove_stale_unreachable_json(profiles_dir: Path, stem: str | None) -> None:
+    """Remove an existing <slug>.json file if it is a stale unreachable stub from an older run."""
+    if not stem:
+        return
+    candidate_path = profiles_dir / f"{stem}.json"
+    if not candidate_path.is_file():
+        return
+    try:
+        payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("meta", {}).get("status") == "unreachable":
+            candidate_path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def run_pipeline(
@@ -1359,6 +1365,11 @@ def run_pipeline(
     finished_at_str = end_time.isoformat().replace("+00:00", "Z")
     duration = (end_time - start_time).total_seconds()
 
+    unreachable_by_status: dict[str, int] = {}
+    for rec in unreachable_records:
+        unreachable_by_status[rec.status] = unreachable_by_status.get(rec.status, 0) + 1
+    genuinely_missing_count = unreachable_by_status.get("genuinely_missing", 0)
+
     summary = RunSummary(
         started_at=started_at_str,
         finished_at=finished_at_str,
@@ -1369,7 +1380,9 @@ def run_pipeline(
         duplicates_skipped=read_result.duplicates_skipped,
         ok_count=ok_count,
         unreachable_count=unreachable_count,
+        genuinely_missing_count=genuinely_missing_count,
         unreachable_by_reason=unreachable_by_reason,
+        unreachable_by_status=unreachable_by_status,
         not_processed_count=not_processed_count,
         output_dir=str(config.output_dir),
     )

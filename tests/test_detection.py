@@ -81,13 +81,36 @@ class TestDetection:
         assert "Security Verification" in (detail2 or "")
 
     def test_detect_status_codes_429_and_999(self) -> None:
-        """Verify 429 and 999 status codes are identified as Reason.BLOCKED."""
+        """Verify 429 and non-login 999 status codes are identified as Reason.BLOCKED."""
         for code in (429, 999):
             status, reason, detail = detect_outcome(
                 "https://www.linkedin.com/in/blocked-user/",
-                "<html><body></body></html>",
+                "<html><body>Request denied</body></html>",
                 status_code=code,
             )
             assert status == Status.UNREACHABLE
             assert reason == Reason.BLOCKED
             assert str(code) in (detail or "")
+
+    def test_detect_http_999_with_login_wall_is_not_visible(self) -> None:
+        """HTTP 999 serving a login/authwall page must be classified as Reason.NOT_VISIBLE."""
+        status_url, reason_url, _ = detect_outcome(
+            "https://www.linkedin.com/authwall?trk=bf",
+            "<html><body>Redirecting</body></html>",
+            status_code=999,
+        )
+        assert status_url == Status.UNREACHABLE
+        assert reason_url == Reason.NOT_VISIBLE
+
+        status_html, reason_html, _ = detect_outcome(
+            "https://www.linkedin.com/in/gaurav-akoliya-aa8a3636a/",
+            (
+                "<html><head><title>Sign Up | LinkedIn</title></head>"
+                "<body><form><input name='session_key'/></form>"
+                "<script>window.recaptchaKey = 'captcha';</script>"
+                "<p>Join LinkedIn</p></body></html>"
+            ),
+            status_code=999,
+        )
+        assert status_html == Status.UNREACHABLE
+        assert reason_html == Reason.NOT_VISIBLE

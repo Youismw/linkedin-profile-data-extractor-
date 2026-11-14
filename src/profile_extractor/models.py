@@ -343,6 +343,14 @@ class FetchResult(BaseModel):
     extra_pages: dict[str, str] = Field(default_factory=dict)
 
 
+def classify_unreachable_status(reason: Reason | str) -> str:
+    """Classify a failure reason into 'genuinely_missing' vs. 'unreachable'."""
+    reason_val = reason.value if isinstance(reason, Reason) else str(reason)
+    if reason_val == Reason.NOT_FOUND.value:
+        return "genuinely_missing"
+    return "unreachable"
+
+
 class UnreachableRecord(BaseModel):
     """Row record formatted for unreachable_profiles.xlsx.
 
@@ -355,9 +363,14 @@ class UnreachableRecord(BaseModel):
     slug: str | None = None
     reason: Reason
     detail: str | None = None
+    status: str = ""
     timestamp_utc: str = Field(
         default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
     )
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.status:
+            self.status = classify_unreachable_status(self.reason)
 
 
 class RunSummary(BaseModel):
@@ -377,7 +390,9 @@ class RunSummary(BaseModel):
     duplicates_skipped: int
     ok_count: int
     unreachable_count: int
+    genuinely_missing_count: int = 0
     unreachable_by_reason: dict[str, int]
+    unreachable_by_status: dict[str, int] = Field(default_factory=dict)
     not_processed_count: int
     output_dir: str
     tool_version: str = "0.1.0"

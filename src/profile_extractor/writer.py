@@ -167,7 +167,15 @@ def write_unreachable_report(
     ws.title = "unreachable"
 
     # Write standardized audit headers
-    headers = ["input_row", "url_as_given", "slug", "reason", "detail", "timestamp_utc"]
+    headers = [
+        "input_row",
+        "url_as_given",
+        "slug",
+        "reason",
+        "detail",
+        "timestamp_utc",
+        "status",
+    ]
     ws.append(headers)
 
     # Write each unreachable diagnostic entry
@@ -180,6 +188,7 @@ def write_unreachable_report(
                 rec.reason.value if hasattr(rec.reason, "value") else str(rec.reason),
                 rec.detail or "",
                 rec.timestamp_utc,
+                rec.status,
             ]
         )
 

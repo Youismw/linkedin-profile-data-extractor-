@@ -90,27 +90,28 @@ class TestWalkingSkeleton:
         assert summary.unreachable_count == 4
         assert summary.not_processed_count == 0
 
-        # 4. Check JSON files created
+        # 4. Check JSON files created (only OK profiles are written to profiles/)
         profiles_dir = output_dir / "profiles"
         assert (profiles_dir / "user-ok.json").exists()
         assert (profiles_dir / "user-ok-2.json").exists()
-        assert (profiles_dir / "user-not-found.json").exists()
-        assert (profiles_dir / "user-not-visible.json").exists()
-        assert (profiles_dir / "user-crashed.json").exists()
+        assert not (profiles_dir / "user-not-found.json").exists()
+        assert not (profiles_dir / "user-not-visible.json").exists()
+        assert not (profiles_dir / "user-crashed.json").exists()
         assert not (profiles_dir / "not-a-valid-profile-url.json").exists()
-
-        # Check crashed profile contract
-        crashed_json = json.loads((profiles_dir / "user-crashed.json").read_text(encoding="utf-8"))
-        assert crashed_json["meta"]["status"] == "unreachable"
-        assert crashed_json["meta"]["reason"] == "unexpected_error"
-        assert crashed_json["profile"] == {}
-        assert crashed_json["other_sections"] == []
 
         # 5. Check unreachable Excel report
         unreachable_xlsx = output_dir / "unreachable_profiles.xlsx"
         assert unreachable_xlsx.exists()
         rep_wb = openpyxl.load_workbook(unreachable_xlsx)
-        assert rep_wb["unreachable"].max_row == 5  # header + 4 unreachable rows
+        ws_rep = rep_wb["unreachable"]
+        assert ws_rep.max_row == 5  # header + 4 unreachable rows
+        status_by_slug = {
+            ws_rep.cell(row=r, column=3).value: ws_rep.cell(row=r, column=7).value
+            for r in range(2, 6)
+        }
+        assert status_by_slug["user-not-found"] == "genuinely_missing"
+        assert status_by_slug["user-not-visible"] == "unreachable"
+        assert status_by_slug["user-crashed"] == "unreachable"
         rep_wb.close()
 
         # 6. Check summary json
@@ -119,11 +120,24 @@ class TestWalkingSkeleton:
         loaded_summary = json.loads(summary_path.read_text(encoding="utf-8"))
         assert loaded_summary["ok_count"] == 2
         assert loaded_summary["unreachable_count"] == 4
+        assert loaded_summary["genuinely_missing_count"] == 1
+        assert loaded_summary["unreachable_by_status"] == {
+            "genuinely_missing": 1,
+            "unreachable": 3,
+        }
 
     def test_stop_on_block_behavior(self, tmp_path: Path) -> None:
         """Verify stop_on_block halts the run and accurately counts not_processed."""
         input_xlsx = tmp_path / "profiles_block.xlsx"
         output_dir = tmp_path / "output_block"
+        profiles_dir = output_dir / "profiles"
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        # Seed a stale unreachable stub from a prior failed run to verify it is cleaned up
+        stale_stub = profiles_dir / "blocked-candidate.json"
+        stale_stub.write_text(
+            json.dumps({"meta": {"status": "unreachable", "reason": "blocked"}, "profile": {}}),
+            encoding="utf-8",
+        )
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -162,7 +176,7 @@ class TestWalkingSkeleton:
         assert summary.unreachable_count == 1
         assert summary.not_processed_count == 2
         assert (output_dir / "profiles" / "first-ok.json").exists()
-        assert (output_dir / "profiles" / "blocked-candidate.json").exists()
+        assert not (output_dir / "profiles" / "blocked-candidate.json").exists()
         assert not (output_dir / "profiles" / "third-skipped.json").exists()
         assert not (output_dir / "profiles" / "fourth-skipped.json").exists()
 

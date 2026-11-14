@@ -31,6 +31,7 @@ Module Communications:
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag
 from playwright.sync_api import (
@@ -48,7 +49,6 @@ from profile_extractor.fetcher.login import run_interactive_login
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import FetchResult, Reason, Status
 from profile_extractor.urls import extract_slug, sanitize_slug
-
 
 _CAPTURE_PROFILE_CARDS_JS = r"""() => {
     const root = document.querySelector('main') || document.body || document.documentElement;
@@ -294,6 +294,12 @@ def _ensure_about_section(composed_html: str, final_html: str) -> str:
         return composed_html
 
 
+def _is_profile_subpage_url(url: str) -> bool:
+    """Return True if url targets a profile subpage rather than the root /in/<slug>/ page."""
+    path_segments = [seg for seg in urlsplit(url).path.split("/") if seg]
+    return len(path_segments) > 2 and path_segments[0].casefold() == "in"
+
+
 class PlaywrightFetcher:
     """Fetcher implementation using Chromium via Playwright sync API."""
 
@@ -429,6 +435,56 @@ class PlaywrightFetcher:
                             self.about_wait_ms / 1000.0,
                         )
 
+                # Early outcome check before About wait and 25-step progressive scrolling:
+                # Immediately detects login walls / authwalls (including HTTP 999 sign-in pages),
+                # 404s, or blocks without scrolling a login screen for 16 seconds.
+                initial_status, initial_reason, initial_detail = detect_outcome(
+                    current_url=page.url,
+                    html=page.content(),
+                    status_code=status_code,
+                )
+                if initial_status != Status.OK:
+                    can_relogin = (
+                        initial_reason == Reason.NOT_VISIBLE
+                        and self._allow_relogin
+                        and self.interactive_relogin
+                        and self.auth_state_path is not None
+                        and (
+                            self.auth_state_path.is_file()
+                            or (sys.stdin is not None and sys.stdin.isatty())
+                        )
+                    )
+                    if can_relogin and self.auth_state_path is not None:
+                        print("\n" + "=" * 70)
+                        print("[!] LinkedIn session has expired or requires re-authentication.")
+                        print("    Opening LinkedIn login window now. Please sign in to resume...")
+                        print("=" * 70 + "\n")
+                        self._allow_relogin = False
+                        self.close()
+                        try:
+                            run_interactive_login(self.auth_state_path)
+                        except Exception as login_err:
+                            logger.warning("Interactive login did not complete: %s", login_err)
+                            return FetchResult(
+                                url=url,
+                                status=initial_status,
+                                reason=initial_reason,
+                                html=None,
+                                fetched_at=now_utc,
+                                detail=initial_detail,
+                            )
+                        return self.fetch(url)
+
+                    return FetchResult(
+                        url=url,
+                        status=initial_status,
+                        reason=initial_reason,
+                        html=None,
+                        fetched_at=now_utc,
+                        detail=initial_detail,
+                    )
+
+                if callable(wait_for_function):
                     # Wait specifically for meaningful About content to appear
                     # Stops waiting immediately once it appears; if not within about_wait_ms, continues normally.
                     try:
@@ -719,18 +775,31 @@ class PlaywrightFetcher:
                     and reason == Reason.NOT_VISIBLE
                     and self._allow_relogin
                     and self.interactive_relogin
-                    and self.auth_state_path
-                    and sys.stdin
-                    and sys.stdin.isatty()
+                    and self.auth_state_path is not None
+                    and (
+                        self.auth_state_path.is_file()
+                        or (sys.stdin is not None and sys.stdin.isatty())
+                    )
                 ):
                     print("\n" + "=" * 70)
                     print("[!] LinkedIn session has expired or requires re-authentication.")
                     print("    Opening LinkedIn login window now. Please sign in to resume...")
                     print("=" * 70 + "\n")
 
-                    run_interactive_login(self.auth_state_path)
-                    self.close()
                     self._allow_relogin = False
+                    self.close()
+                    try:
+                        run_interactive_login(self.auth_state_path)
+                    except Exception as login_err:
+                        logger.warning("Interactive login did not complete: %s", login_err)
+                        return FetchResult(
+                            url=url,
+                            status=status,
+                            reason=reason,
+                            html=None,
+                            fetched_at=now_utc,
+                            detail=detail,
+                        )
                     return self.fetch(url)
 
                 # Optional debug dumping of raw HTML fixtures
@@ -740,7 +809,15 @@ class PlaywrightFetcher:
                         clean_slug = sanitize_slug(slug, fallback_seed=url)
                         self.save_raw_html_dir.mkdir(parents=True, exist_ok=True)
                         dump_path = self.save_raw_html_dir / f"{clean_slug}.html"
-                        dump_path.write_text(html, encoding="utf-8")
+                        if _is_profile_subpage_url(url):
+                            subpage_block = f"\n\n<!-- === SUBPAGE: {url} === -->\n{html}"
+                            if dump_path.exists():
+                                with dump_path.open("a", encoding="utf-8") as fh:
+                                    fh.write(subpage_block)
+                            else:
+                                dump_path.write_text(subpage_block.lstrip(), encoding="utf-8")
+                        else:
+                            dump_path.write_text(html, encoding="utf-8")
                     except Exception as dump_err:
                         logger.debug("Failed saving raw HTML dump: %s", dump_err)
 

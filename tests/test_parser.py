@@ -441,3 +441,200 @@ class TestParser:
         """
         ci = parse_contact_info(autocomplete_html)
         assert ci is None
+
+    def test_parse_profile_merges_multiple_matching_sections_without_overwriting(self) -> None:
+        """Duplicate matching sections in composed HTML merge additively without overwriting."""
+        html = """
+        <html>
+          <body>
+            <main>
+              <section id="top-card">
+                <h1>Jane Doe</h1>
+                <p>Staff Software Engineer</p>
+              </section>
+
+              <section id="exp-card-1">
+                <h2>Experience</h2>
+                <ul>
+                  <li>
+                    <span>Senior Engineer</span>
+                    <span>Acme Corp</span>
+                    <span>2021 - Present</span>
+                  </li>
+                  <li>
+                    <span>Software Engineer</span>
+                    <span>Beta Systems</span>
+                    <span>2019 - 2021</span>
+                  </li>
+                </ul>
+              </section>
+              <section id="exp-card-2">
+                <h2>Experience</h2>
+                <ul>
+                  <li>
+                    <span>Software Engineer</span>
+                    <span>Beta Systems</span>
+                    <span>2019 - 2021</span>
+                    <span>Led migration of core billing services to event-driven workers.</span>
+                  </li>
+                  <li>
+                    <span>Junior Developer</span>
+                    <span>Gamma Labs</span>
+                    <span>2017 - 2019</span>
+                  </li>
+                </ul>
+              </section>
+
+              <section id="edu-card-1">
+                <h2>Education</h2>
+                <ul>
+                  <li>
+                    <span>State University</span>
+                    <span>M.S. Computer Science</span>
+                    <span>2015 - 2017</span>
+                  </li>
+                </ul>
+              </section>
+              <section id="edu-card-2">
+                <h2>Education</h2>
+                <ul>
+                  <li>
+                    <span>State University</span>
+                    <span>M.S. Computer Science</span>
+                    <span>2015 - 2017</span>
+                  </li>
+                  <li>
+                    <span>City College</span>
+                    <span>B.S. Computer Science</span>
+                    <span>2011 - 2015</span>
+                  </li>
+                </ul>
+              </section>
+
+              <section id="skills-card-1">
+                <h2>Skills</h2>
+                <ul>
+                  <li><span>Python</span></li>
+                  <li><span>Playwright</span></li>
+                </ul>
+              </section>
+              <section id="skills-card-2">
+                <h2>Skills</h2>
+                <ul>
+                  <li><span>playwright</span></li>
+                  <li><span>TypeScript</span></li>
+                </ul>
+              </section>
+
+              <section id="cert-card-1">
+                <h2>Licenses &amp; certifications</h2>
+                <ul>
+                  <li>
+                    <span>AWS Certified Solutions Architect</span>
+                    <span>Amazon Web Services</span>
+                    <span>Credential ID AWS-123</span>
+                  </li>
+                </ul>
+              </section>
+              <section id="cert-card-2">
+                <h2>Licenses &amp; certifications</h2>
+                <ul>
+                  <li>
+                    <span>AWS Certified Solutions Architect</span>
+                    <span>Amazon Web Services</span>
+                    <span>Credential ID AWS-123</span>
+                  </li>
+                  <li>
+                    <span>CKAD</span>
+                    <span>CNCF</span>
+                    <span>Credential ID CNCF-456</span>
+                  </li>
+                </ul>
+              </section>
+
+              <section id="proj-card-1">
+                <h2>Projects</h2>
+                <ul>
+                  <li>
+                    <span>Open Scraper</span>
+                    <span>2024 - 2025</span>
+                  </li>
+                </ul>
+              </section>
+              <section id="proj-card-2">
+                <h2>Projects</h2>
+                <ul>
+                  <li>
+                    <span>Open Scraper</span>
+                    <span>2024 - 2025</span>
+                    <span>Built resilient HTML parser.</span>
+                  </li>
+                  <li>
+                    <span>Data Pipeline</span>
+                    <span>2022 - 2023</span>
+                  </li>
+                </ul>
+              </section>
+
+              <section id="lang-card-1">
+                <h2>Languages</h2>
+                <ul>
+                  <li>
+                    <span>English</span>
+                    <span>Native or bilingual proficiency</span>
+                  </li>
+                </ul>
+              </section>
+              <section id="lang-card-2">
+                <h2>Languages</h2>
+                <ul>
+                  <li>
+                    <span>English</span>
+                    <span>Native or bilingual proficiency</span>
+                  </li>
+                  <li>
+                    <span>Hindi</span>
+                    <span>Full professional proficiency</span>
+                  </li>
+                </ul>
+              </section>
+            </main>
+          </body>
+        </html>
+        """
+
+        doc = parse_profile(
+            source_url="https://www.linkedin.com/in/jane-doe/",
+            slug="jane-doe",
+            html=html,
+            status=Status.OK,
+            important_fields=DEFAULT_IMPORTANT_FIELDS,
+        )
+
+        p = doc.profile
+        assert p.experience is not None
+        assert [item.title for item in p.experience] == [
+            "Senior Engineer",
+            "Software Engineer",
+            "Junior Developer",
+        ]
+        beta_item = p.experience[1]
+        assert beta_item.description is not None and "billing services" in beta_item.description
+
+        assert p.education is not None
+        assert [item.school for item in p.education] == ["State University", "City College"]
+
+        assert p.skills == ["Python", "Playwright", "TypeScript"]
+
+        assert p.certifications is not None
+        assert [item.name for item in p.certifications] == [
+            "AWS Certified Solutions Architect",
+            "CKAD",
+        ]
+
+        assert p.projects is not None
+        assert [item.title for item in p.projects] == ["Open Scraper", "Data Pipeline"]
+        assert p.projects[0].description is not None and "HTML parser" in p.projects[0].description
+
+        assert p.languages is not None
+        assert [item.name for item in p.languages] == ["English", "Hindi"]

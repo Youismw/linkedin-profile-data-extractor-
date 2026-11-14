@@ -33,15 +33,19 @@ LOGIN_WALL_URL_PATTERNS = [
     re.compile(r"/login", re.IGNORECASE),
     re.compile(r"/checkpoint/lg/", re.IGNORECASE),
     re.compile(r"/uas/login", re.IGNORECASE),
+    re.compile(r"/signup", re.IGNORECASE),
 ]
 
 # DOM text patterns indicating the page requires signing in
 LOGIN_WALL_CONTENT_PATTERNS = [
     re.compile(r"Sign in to view", re.IGNORECASE),
+    re.compile(r"Sign in to LinkedIn", re.IGNORECASE),
     re.compile(r"Join LinkedIn", re.IGNORECASE),
     re.compile(r"class=[\"'].*authwall.*[\"']", re.IGNORECASE),
     re.compile(r"id=[\"']authwall.*[\"']", re.IGNORECASE),
     re.compile(r"Please sign in", re.IGNORECASE),
+    re.compile(r"name=[\"']session_key[\"']", re.IGNORECASE),
+    re.compile(r"<title>[^<]*(?:Sign In|Sign Up|Log In)[^<]*</title>", re.IGNORECASE),
 ]
 
 # DOM patterns indicating non-existent, deleted, or merged profiles
@@ -69,7 +73,10 @@ BLOCKED_CONTENT_PATTERNS = [
     re.compile(r"unusual traffic from your computer network", re.IGNORECASE),
     re.compile(r"account.*temporarily restricted", re.IGNORECASE),
     re.compile(r"Please solve this puzzle", re.IGNORECASE),
-    re.compile(r"\bcaptcha\b", re.IGNORECASE),
+    re.compile(
+        r"<[^>]*(?:id|class)=[\"'][^\"']*(?:captcha|g-recaptcha|h-captcha|arkose)[^\"']*[\"']",
+        re.IGNORECASE,
+    ),
 ]
 
 
@@ -81,20 +88,22 @@ def detect_outcome(
     """Inspect current URL, HTTP status code, and HTML body to detect page state.
 
     Evaluation Order:
-    1. Check for HTTP status codes:
-       - 429 / 999 -> BLOCKED
-       - 404 -> NOT_FOUND
-    2. Check for Security Challenges / Restrictions -> BLOCKED.
-    3. Check for login / authwall redirection -> NOT_VISIBLE.
-    4. Check for Profile Not Found text -> NOT_FOUND.
-    5. Otherwise -> Status.OK.
+    1. Check unambiguous HTTP status codes (401 -> NOT_VISIBLE, 404/410 -> NOT_FOUND,
+       403/429 -> BLOCKED).
+    2. Check for Security Challenges / Bot Blocks (URL redirects).
+    3. Check for Login Wall / Authwall (URL redirects), even when HTTP 999 is returned.
+    4. Check for Security Challenge / Blocked DOM content.
+    5. Check for Profile Not Found DOM content.
+    6. Check for Authwall / Login Wall DOM content, even when HTTP 999 is returned.
+    7. Check remaining HTTP error status codes (999 -> BLOCKED, 5xx/4xx -> UNEXPECTED_ERROR).
+    8. Otherwise -> Status.OK.
 
     Returns:
         tuple of (Status, Reason, diagnostic_detail_string).
     """
-    # 1. Check HTTP Status Codes
+    # 1. Check unambiguous HTTP Status Codes first
     if status_code is not None:
-        if status_code in (429, 999):
+        if status_code == 429:
             return (
                 Status.UNREACHABLE,
                 Reason.BLOCKED,
@@ -114,18 +123,6 @@ def detect_outcome(
             )
         if status_code in (404, 410):
             return Status.UNREACHABLE, Reason.NOT_FOUND, f"Profile not found (HTTP {status_code})"
-        if 500 <= status_code < 600:
-            return (
-                Status.UNREACHABLE,
-                Reason.UNEXPECTED_ERROR,
-                f"LinkedIn server error (HTTP {status_code})",
-            )
-        if 400 <= status_code < 500:
-            return (
-                Status.UNREACHABLE,
-                Reason.UNEXPECTED_ERROR,
-                f"Client error response (HTTP {status_code})",
-            )
 
     # 2. Check for Security Challenges / Bot Blocks (URL redirects first)
     for pattern in BLOCKED_URL_PATTERNS:
@@ -152,10 +149,31 @@ def detect_outcome(
         if pattern.search(html):
             return Status.UNREACHABLE, Reason.NOT_FOUND, "Profile not found page detected"
 
-    # 6. Check for Authwall content
+    # 6. Check for Authwall / Login Wall content (including pages served with HTTP 999)
     for pattern in LOGIN_WALL_CONTENT_PATTERNS:
         if pattern.search(html):
             return Status.UNREACHABLE, Reason.NOT_VISIBLE, "Login wall content detected"
 
-    # 6. Standard Visible Page
+    # 7. Check remaining HTTP error status codes (e.g. non-login HTTP 999, 5xx, 4xx)
+    if status_code is not None:
+        if status_code == 999:
+            return (
+                Status.UNREACHABLE,
+                Reason.BLOCKED,
+                f"Rate limited or request denied by LinkedIn (HTTP {status_code})",
+            )
+        if 500 <= status_code < 600:
+            return (
+                Status.UNREACHABLE,
+                Reason.UNEXPECTED_ERROR,
+                f"LinkedIn server error (HTTP {status_code})",
+            )
+        if 400 <= status_code < 500:
+            return (
+                Status.UNREACHABLE,
+                Reason.UNEXPECTED_ERROR,
+                f"Client error response (HTTP {status_code})",
+            )
+
+    # 8. Standard Visible Page
     return Status.OK, None, None

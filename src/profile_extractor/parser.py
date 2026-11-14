@@ -30,6 +30,7 @@ Module Communications:
 
 import re
 from collections.abc import Sequence
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from bs4 import BeautifulSoup, Tag
@@ -1273,6 +1274,119 @@ def parse_contact_info(html: str) -> ContactInfo | None:
     )
 
 
+def _merge_skill_section_items(
+    existing: list[str] | None, incoming: Sequence[str]
+) -> list[str]:
+    """Merge skill strings preserving first-seen casing/order without duplicates."""
+    merged = list(existing) if existing else []
+    seen = {" ".join(item.split()).casefold() for item in merged if item.strip()}
+    for skill in incoming:
+        clean = " ".join(skill.split())
+        if not clean:
+            continue
+        key = clean.casefold()
+        if key not in seen:
+            merged.append(clean)
+            seen.add(key)
+    return merged
+
+
+def _section_record_matches(section: str, left: Any, right: Any) -> bool:
+    """Return True if two parsed section records represent the same entry."""
+    a = left.model_dump(exclude_none=True)
+    b = right.model_dump(exclude_none=True)
+
+    def val(source: dict[str, Any], field: str) -> str:
+        raw_val = source.get(field)
+        return _clean_text(raw_val).casefold() if isinstance(raw_val, str) else ""
+
+    def compatible(field: str) -> bool:
+        av, bv = val(a, field), val(b, field)
+        return not (av and bv and av != bv)
+
+    if section == "experience":
+        return (
+            bool(val(a, "title"))
+            and val(a, "title") == val(b, "title")
+            and compatible("company")
+            and compatible("dates")
+            and bool(
+                (val(a, "company") and val(b, "company"))
+                or (val(a, "dates") and val(b, "dates"))
+            )
+        )
+    if section == "education":
+        return (
+            bool(val(a, "school"))
+            and val(a, "school") == val(b, "school")
+            and compatible("degree")
+            and compatible("dates")
+            and bool(
+                (val(a, "degree") and val(b, "degree"))
+                or (val(a, "dates") and val(b, "dates"))
+            )
+        )
+    if section == "certifications":
+        left_id, right_id = val(a, "credential_id"), val(b, "credential_id")
+        if left_id and right_id:
+            return left_id == right_id
+        return bool(val(a, "name")) and val(a, "name") == val(b, "name") and compatible("issuer")
+    if section == "projects":
+        left_url, right_url = val(a, "url"), val(b, "url")
+        if left_url and right_url:
+            return left_url == right_url
+        return bool(val(a, "title")) and val(a, "title") == val(b, "title") and compatible("dates")
+    if section == "languages":
+        return bool(val(a, "name")) and val(a, "name") == val(b, "name")
+    return bool(val(a, "raw")) and val(a, "raw") == val(b, "raw")
+
+
+def _merge_section_record(existing: Any, incoming: Any) -> None:
+    """Fill missing scalar fields and retain richer descriptions/skills/raw text on match."""
+    for field, value in incoming.model_dump(exclude_none=True).items():
+        if value is None or value == "" or value == []:
+            continue
+        current = getattr(existing, field, None)
+        if current is None or current == "" or current == []:
+            setattr(existing, field, value)
+        elif (
+            field in ("description", "raw")
+            and isinstance(current, str)
+            and isinstance(value, str)
+        ):
+            if len(value) > len(current):
+                setattr(existing, field, value)
+        elif field == "skills" and isinstance(current, list) and isinstance(value, list):
+            seen = {
+                " ".join(str(item).split()).casefold()
+                for item in current
+                if str(item).strip()
+            }
+            for item in value:
+                item_str = str(item)
+                key = " ".join(item_str.split()).casefold()
+                if key and key not in seen:
+                    current.append(item_str)
+                    seen.add(key)
+
+
+def _merge_structured_section_items(
+    section: str, existing: list[Any] | None, incoming: Sequence[Any]
+) -> list[Any]:
+    """Merge matching structured section records additively while preserving order."""
+    merged = [item.model_copy(deep=True) for item in existing] if existing else []
+    for candidate in incoming:
+        match = next(
+            (item for item in merged if _section_record_matches(section, item, candidate)),
+            None,
+        )
+        if match is None:
+            merged.append(candidate.model_copy(deep=True))
+        else:
+            _merge_section_record(match, candidate)
+    return merged
+
+
 def parse_profile(
     source_url: str,
     slug: str,
@@ -1569,7 +1683,7 @@ def parse_profile(
                     if exp.raw:
                         exp_items.append(exp)
             if exp_items:
-                experience = exp_items
+                experience = _merge_structured_section_items("experience", experience, exp_items)
             continue
 
         # 4c. Check Education
@@ -1583,7 +1697,7 @@ def parse_profile(
                 if edu_item.raw:
                     edu_items.append(edu_item)
             if edu_items:
-                education = edu_items
+                education = _merge_structured_section_items("education", education, edu_items)
             continue
 
         # 4d. Check Skills
@@ -1596,7 +1710,7 @@ def parse_profile(
                     if _is_valid_skill(skill_name) and skill_name not in skill_list:
                         skill_list.append(skill_name)
             if skill_list:
-                skills = skill_list
+                skills = _merge_skill_section_items(skills, skill_list)
             continue
 
         # 4e. Check Certifications
@@ -1607,7 +1721,9 @@ def parse_profile(
             cert_items = [_parse_certification_item(it) for it in items]
             valid_certs = [c for c in cert_items if c.name or c.raw]
             if valid_certs:
-                certifications = valid_certs
+                certifications = _merge_structured_section_items(
+                    "certifications", certifications, valid_certs
+                )
                 continue
 
         # 4f. Check Projects
@@ -1618,7 +1734,7 @@ def parse_profile(
             proj_items = [_parse_project_item(it) for it in items]
             valid_projs = [p for p in proj_items if p.title or p.raw]
             if valid_projs:
-                projects = valid_projs
+                projects = _merge_structured_section_items("projects", projects, valid_projs)
                 continue
 
         # 4g. Check Languages
@@ -1629,7 +1745,7 @@ def parse_profile(
             lang_items = [_parse_language_item(it) for it in items]
             valid_langs = [item for item in lang_items if item.name or item.raw]
             if valid_langs:
-                languages = valid_langs
+                languages = _merge_structured_section_items("languages", languages, valid_langs)
                 continue
 
         # 4h. Route any other visible section into other_sections

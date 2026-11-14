@@ -113,7 +113,7 @@ class TestWriter:
         try:
             assert "unreachable" in wb.sheetnames
             ws = wb["unreachable"]
-            headers = [ws.cell(row=1, column=col).value for col in range(1, 7)]
+            headers = [ws.cell(row=1, column=col).value for col in range(1, 8)]
             assert headers == [
                 "input_row",
                 "url_as_given",
@@ -121,15 +121,18 @@ class TestWriter:
                 "reason",
                 "detail",
                 "timestamp_utc",
+                "status",
             ]
 
             assert ws.cell(row=2, column=1).value == 2
             assert ws.cell(row=2, column=3).value == "missing-user"
             assert ws.cell(row=2, column=4).value == "not_found"
+            assert ws.cell(row=2, column=7).value == "genuinely_missing"
 
             assert ws.cell(row=3, column=1).value == 3
             assert ws.cell(row=3, column=3).value in ("", None)
             assert ws.cell(row=3, column=4).value == "invalid_url"
+            assert ws.cell(row=3, column=7).value == "unreachable"
         finally:
             wb.close()
 
