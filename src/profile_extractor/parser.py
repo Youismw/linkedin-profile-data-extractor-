@@ -452,7 +452,9 @@ def _is_location_line(line: str) -> bool:
     # Narrative sentences ending in period are not locations (except D.C. / U.S.)
     if line.endswith(".") and not line.endswith(" D.C.") and not line.endswith(" U.S."):
         return False
-    # Never match dates, durations, skills chips, or UI noise as location
+    # Never match employment-type lines (e.g. 'Club, College · Full-time'), dates, durations, or noise as location
+    if EMPLOYMENT_TYPE_SUFFIX_PATTERN.search(line):
+        return False
     if DATE_RANGE_PATTERN.search(line) or DURATION_PATTERN.search(line):
         return False
     if SKILLS_CHIP_PATTERN.search(line) or UI_BADGE_PATTERN.search(line):
@@ -559,6 +561,8 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
             sub_desc_parts: list[str] = []
 
             for line in s_lines[1:]:
+                if line in ("…", "...", "more", "see more", "Present"):
+                    continue
                 if UI_BADGE_PATTERN.search(line):
                     continue
                 if SKILLS_CHIP_PATTERN.search(line):
@@ -572,19 +576,14 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
                 if not sub_loc and _is_location_line(line):
                     sub_loc = line
                     continue
-                if not any(p.search(line) for p in NOISE_LINE_PATTERNS) and line not in (
-                    "…",
-                    "...",
-                    "more",
-                    "see more",
-                ):
+                if not any(p.search(line) for p in NOISE_LINE_PATTERNS):
                     sub_desc_parts.append(line)
 
             raw_text = _clean_text(s_tag.get_text(separator=" | "))
             desc_str = " ".join(sub_desc_parts) if sub_desc_parts else None
 
-            # Guard against description in title
-            if sub_title and (len(sub_title) > 90 or (len(sub_title) > 60 and "." in sub_title)):
+            # Guard against narrative sentences accidentally captured as title
+            if sub_title and (len(sub_title) > 140 or (len(sub_title) > 60 and "." in sub_title)):
                 if desc_str:
                     desc_str = f"{sub_title} {desc_str}"
                 else:
@@ -626,6 +625,9 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
     desc_parts: list[str] = []
 
     for line in lines[1:]:
+        if line in ("…", "...", "more", "see more", "Present"):
+            continue
+
         # Skills chip (e.g. "Node.js, MongoDB and +2 skills")
         if SKILLS_CHIP_PATTERN.search(line):
             skills_preview = line
@@ -649,14 +651,13 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
             continue
 
         # Narrative description (including bullet list texts!)
-        if line not in ("…", "...", "more", "see more", "Present"):
-            desc_parts.append(line)
+        desc_parts.append(line)
 
     description: str | None = " ".join(desc_parts) if desc_parts else None
     raw_text = _clean_text(tag.get_text(separator=" | "))
 
-    # Invert-proof title guard
-    if title and (len(title) > 90 or (len(title) > 60 and "." in title)):
+    # Invert-proof title guard against narrative sentences
+    if title and (len(title) > 140 or (len(title) > 60 and "." in title)):
         if description:
             description = f"{title} {description}"
         else:
@@ -1026,8 +1027,20 @@ def _build_project_item_from_lines(lines: list[str], url: str | None = None) -> 
     project_skills: list[str] | None = None
 
     for line in lines[1:]:
-        # Detect project timeline or year range
-        if not dates and (DATE_RANGE_PATTERN.search(line) or re.search(r"\b\d{4}\b", line)):
+        # Detect short project timeline or standalone year/month-year line (never full descriptions)
+        stripped = line.strip()
+        is_proj_date = len(stripped) <= 60 and (
+            bool(DATE_RANGE_PATTERN.search(stripped))
+            or bool(_PROJ_DATE_RE.fullmatch(stripped))
+            or bool(
+                re.fullmatch(
+                    r"(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+)?\d{4}",
+                    stripped,
+                    re.IGNORECASE,
+                )
+            )
+        )
+        if not dates and is_proj_date:
             dates = line
             continue
         # Detect associated skills chip list

@@ -467,3 +467,81 @@ class TestSkillMergeSafety:
 
     def test_empty_profile_skills_uses_detail_page(self) -> None:
         assert _merge_skill_items(None, ["Python", "Go"]) == ["Python", "Go"]
+
+
+class TestEdgeCaseExperienceAndProjectParsing:
+    """Verify edge-case regressions on company comma+employment type, long titles, and project dates."""
+
+    def test_company_with_comma_and_employment_type_not_misclassified_as_location(self) -> None:
+        from bs4 import BeautifulSoup
+        from profile_extractor.parser import _parse_experience_items
+
+        html = """
+        <li>
+          <div>Event Coordinator</div>
+          <div>Gaming Club, BITS Pilani · Full-time</div>
+          <div>Aug 2024 - Present · 2 yrs 4 mos</div>
+          <div>Present</div>
+          <div>Organized campus esports tournaments.</div>
+        </li>
+        """
+        tag = BeautifulSoup(html, "lxml").find("li")
+        assert tag is not None
+        items = _parse_experience_items(tag)
+        assert len(items) == 1
+        assert items[0].title == "Event Coordinator"
+        assert items[0].company == "Gaming Club, BITS Pilani"
+        assert items[0].dates == "Aug 2024 - Present · 2 yrs 4 mos"
+        assert items[0].location is None
+        assert items[0].description == "Organized campus esports tournaments."
+
+    def test_long_grouped_title_under_140_chars_preserved(self) -> None:
+        from bs4 import BeautifulSoup
+        from profile_extractor.parser import _parse_experience_items
+
+        html = """
+        <li>
+          <div>Innodata Inc.</div>
+          <ul>
+            <li>
+              <div>Head of Human Resources Talent COE (Talent Management, Capability Development, Employee Experience)</div>
+              <div>Apr 2023 - Present · 3 yrs 8 mos</div>
+              <div>Present</div>
+              <div>Leading talent strategy and enablement teams.</div>
+            </li>
+            <li>
+              <div>Project Lead</div>
+              <div>Jan 2022 - Apr 2023 · 1 yr 4 mos</div>
+            </li>
+          </ul>
+        </li>
+        """
+        tag = BeautifulSoup(html, "lxml").find("li")
+        assert tag is not None
+        items = _parse_experience_items(tag)
+        assert len(items) == 2
+        assert (
+            items[0].title
+            == "Head of Human Resources Talent COE (Talent Management, Capability Development, Employee Experience)"
+        )
+        assert items[0].company == "Innodata Inc."
+        assert items[0].description == "Leading talent strategy and enablement teams."
+
+    def test_project_description_with_year_not_treated_as_dates(self) -> None:
+        from profile_extractor.parser import parse_projects_details
+
+        html = """
+        <html><body><main>
+          <div data-component-type="LazyColumn">
+            <div componentkey="entity-collection-item-1">
+              <p>AsiaCEO Diversity Forum 2024</p>
+              <p>Represented the organization as a conference speaker at the AsiaCEO Diversity Forum 2024, where I spoke on inclusive workplace leadership.</p>
+            </div>
+          </div>
+        </main></body></html>
+        """
+        projs = parse_projects_details(html)
+        assert len(projs) == 1
+        assert projs[0].title == "AsiaCEO Diversity Forum 2024"
+        assert projs[0].dates is None
+        assert projs[0].description is not None and "AsiaCEO Diversity Forum 2024" in projs[0].description
