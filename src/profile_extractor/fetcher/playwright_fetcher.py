@@ -176,6 +176,40 @@ _WAIT_FOR_MEANINGFUL_ABOUT_JS = r"""() => {
     return false;
 }"""
 
+_WAIT_FOR_DETAILS_ENTITIES_JS = r"""() => {
+    const bodyText = (document.body?.innerText || '').toLowerCase();
+    const terminalPage = [
+        'sign in to view',
+        'security verification',
+        'page not found',
+        'profile unavailable'
+    ].some(token => bodyText.includes(token));
+    if (terminalPage) return true;
+
+    const main = document.querySelector('main') || document.body;
+    if (!main) return false;
+
+    const items = Array.from(main.querySelectorAll(
+        'div[componentkey*="entity-collection-item"], ' +
+        'div[componentkey^="com.linkedin.sdui.profile.skill"], ' +
+        'ul > li'
+    ));
+    if (items.length > 0) {
+        // Ensure initial skeleton containers have hydrated with real text rather than
+        // returning while placeholders are still empty.
+        const sample = items.slice(0, Math.min(items.length, 3));
+        const nonEmptyCount = sample.filter(
+            el => ((el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().length > 2)
+        ).length;
+        if (nonEmptyCount === sample.length) return true;
+        return false;
+    }
+
+    // Fallback for detail pages whose layout uses non-list containers
+    const mainText = (main.innerText || '').replace(/\s+/g, ' ').trim();
+    return mainText.length > 200;
+}"""
+
 
 def _compose_captured_profile_html(cards: object, fallback_html: str) -> str:
     """Preserve the final page and merge in cards lost to LinkedIn virtualization.
@@ -494,18 +528,28 @@ class PlaywrightFetcher:
                     )
 
                 if callable(wait_for_function):
-                    # Wait specifically for meaningful About content to appear
-                    # Stops waiting immediately once it appears; if not within about_wait_ms, continues normally.
-                    try:
-                        page.wait_for_function(
-                            _WAIT_FOR_MEANINGFUL_ABOUT_JS,
-                            timeout=min(self.timeout_ms, self.about_wait_ms),
+                    # Choose appropriate hydration check based on route type:
+                    # - /overlay/contact-info/: handled directly by modal hydration check below
+                    # - /details/... subpages: wait for LazyColumn/list entity items to populate
+                    # - Root profile pages: wait for meaningful About card content
+                    if "/overlay/contact-info" not in url:
+                        is_subpage = _is_profile_subpage_url(url)
+                        wait_js = (
+                            _WAIT_FOR_DETAILS_ENTITIES_JS
+                            if is_subpage
+                            else _WAIT_FOR_MEANINGFUL_ABOUT_JS
                         )
-                    except PlaywrightTimeoutError:
-                        logger.debug(
-                            "About section did not reach ready state within %.1fs; continuing with capture.",
-                            self.about_wait_ms / 1000.0,
-                        )
+                        try:
+                            page.wait_for_function(
+                                wait_js,
+                                timeout=min(self.timeout_ms, self.about_wait_ms),
+                            )
+                        except PlaywrightTimeoutError:
+                            logger.debug(
+                                "%s did not reach ready state within %.1fs; continuing with capture.",
+                                "Detail subpage entities" if is_subpage else "About section",
+                                self.about_wait_ms / 1000.0,
+                            )
 
                     # If this is a contact overlay subpage, trigger and wait for the modal dialog to hydrate
                     if "/overlay/contact-info" in url:

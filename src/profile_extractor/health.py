@@ -103,6 +103,19 @@ def _normalize_text(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _has_squashed_raw_variant(raw: str, pattern: re.Pattern[str]) -> bool:
+    """Check whether any newline-separated raw variant contains >= 2 item markers.
+
+    When main-profile and subpage parsers merge the same item, minor punctuation
+    differences cause both raw strings to be joined with ``\\n``. Evaluating each
+    variant line separately prevents false-positive ``squashed_items`` warnings
+    while still catching multiple items squashed into one extracted block.
+    """
+    if not raw:
+        return False
+    return any(len(pattern.findall(line)) >= 2 for line in raw.splitlines() if line.strip())
+
+
 def _extract_stated_count(raw_text: str, section: str) -> int | None:
     """Extract LinkedIn's declared item count from section headers or subpage links.
 
@@ -237,44 +250,37 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
     # Check D: Multiple records squashed into a single item's raw string
     # When LinkedIn wraps all items in a single container without individual <li> nodes,
     # multiple dates or issuance strings end up in one item instead of separate records.
+    # Evaluated per '\n'-delimited raw variant so merged main+subpage copies don't double-count.
     # --------------------------------------------------------------------------
-    # Check for multiple 'Issued <Date>' occurrences inside a single certificate item
-    if any(len(_CERT_ISSUED_RE.findall(item.raw or "")) >= 2 for item in cert_items):
-        diagnostics.append(
-            SectionDiagnostic(
-                section="certifications",
-                code="squashed_items",
-                message=(
-                    "certifications: multiple certificates were squashed into a single "
-                    "entry's raw text."
-                ),
+    squashed_specs = (
+        (
+            "certifications",
+            cert_items,
+            _CERT_ISSUED_RE,
+            "certifications: multiple certificates were squashed into a single entry's raw text.",
+        ),
+        (
+            "languages",
+            lang_items,
+            _LANG_PROFICIENCY_RE,
+            "languages: multiple languages were squashed into a single entry's raw text.",
+        ),
+        (
+            "education",
+            edu_items,
+            _EDU_DATE_RANGE_RE,
+            "education: multiple education entries were squashed into a single entry's raw text.",
+        ),
+    )
+    for sec_name, sec_items, pattern, msg in squashed_specs:
+        if any(_has_squashed_raw_variant(item.raw or "", pattern) for item in sec_items):
+            diagnostics.append(
+                SectionDiagnostic(
+                    section=sec_name,
+                    code="squashed_items",
+                    message=msg,
+                )
             )
-        )
-
-    # Check for multiple language proficiency phrases in one language entry
-    if any(len(_LANG_PROFICIENCY_RE.findall(item.raw or "")) >= 2 for item in lang_items):
-        diagnostics.append(
-            SectionDiagnostic(
-                section="languages",
-                code="squashed_items",
-                message=(
-                    "languages: multiple languages were squashed into a single entry's raw text."
-                ),
-            )
-        )
-
-    # Check for multiple graduation/attendance date ranges in one education entry
-    if any(len(_EDU_DATE_RANGE_RE.findall(item.raw or "")) >= 2 for item in edu_items):
-        diagnostics.append(
-            SectionDiagnostic(
-                section="education",
-                code="squashed_items",
-                message=(
-                    "education: multiple education entries were squashed into a single "
-                    "entry's raw text."
-                ),
-            )
-        )
 
     # --------------------------------------------------------------------------
     # Check E: Sections wrongly routed to other_sections, missing sections, or count mismatches

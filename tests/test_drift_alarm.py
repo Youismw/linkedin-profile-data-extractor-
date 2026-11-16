@@ -483,3 +483,52 @@ def test_post_sdui_update_dom_structures_extract_cleanly() -> None:
     assert len(doc.profile.education or []) == 4
     assert len(doc.profile.certifications or []) == 3
     assert len(doc.profile.languages or []) == 3
+
+
+def test_merged_raw_variants_do_not_trigger_squashed_items() -> None:
+    """Newline-joined main+subpage raw variants of the same entry must not trigger squashed_items."""
+    doc = ProfileDocument(
+        meta=Meta(
+            source_url="https://www.linkedin.com/in/merged-user/",
+            slug="merged-user",
+            status=Status.OK,
+        ),
+        profile=Profile(
+            name="Merged User",
+            headline="Software Engineer",
+            education=[
+                EducationItem(
+                    school="Example University",
+                    degree="B.E.",
+                    dates="Aug 2021 – Jul 2026",
+                    raw=(
+                        "Example University | B.E. | Aug 2021 – Jul 2026 | Skills: | MATLAB, +1 skill\n"
+                        "Example University | B.E. | Aug 2021 – Jul 2026 | MATLAB and +1 skill"
+                    ),
+                )
+            ],
+            certifications=[
+                CertificationItem(
+                    name="SQL Course",
+                    issuer="Coursera",
+                    issue_date="Issued Jul 2025",
+                    raw=(
+                        "SQL Course | Coursera | Issued Jul 2025 | Skills: | PostgreSQL\n"
+                        "SQL Course | Coursera | Issued Jul 2025 | PostgreSQL"
+                    ),
+                )
+            ],
+            languages=[
+                LanguageItem(
+                    name="English",
+                    proficiency="Full professional proficiency",
+                    raw=(
+                        "English | Full professional proficiency\n"
+                        "English | Full professional proficiency | Verified"
+                    ),
+                )
+            ],
+        ),
+    )
+
+    assert check_profile_health(doc) == []

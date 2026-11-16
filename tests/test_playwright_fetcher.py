@@ -330,6 +330,60 @@ class TestPlaywrightFetcher:
         finally:
             fetcher.close()
 
+    def test_subpage_waits_for_details_entities_not_about(self) -> None:
+        """Verify /details/ subpages wait for detail entity hydration instead of About."""
+        from profile_extractor.fetcher.playwright_fetcher import (
+            _WAIT_FOR_DETAILS_ENTITIES_JS,
+            _WAIT_FOR_MEANINGFUL_ABOUT_JS,
+        )
+
+        wait_scripts: list[str] = []
+
+        class MockPage:
+            def __init__(self, target_url: str) -> None:
+                self.url = target_url
+
+            def set_default_timeout(self, timeout: int) -> None:
+                pass
+
+            def goto(self, url: str, wait_until: str = "domcontentloaded") -> object:
+                self.url = url
+                return type("Resp", (), {"status": 200})()
+
+            def wait_for_function(self, script: str, timeout: int = 0) -> None:
+                wait_scripts.append(script)
+
+            def evaluate(self, script: str) -> object:
+                if "__profileExtractorCapturedCardsV1" in script:
+                    return []
+                return {"count": 0, "totalTextLength": 0}
+
+            def wait_for_timeout(self, ms: int) -> None:
+                pass
+
+            def content(self) -> str:
+                return "<html><body><main><div>Projects</div></main></body></html>"
+
+            def close(self) -> None:
+                pass
+
+        class MockContext:
+            def new_page(self) -> MockPage:
+                return MockPage("")
+
+            def close(self) -> None:
+                pass
+
+        fetcher = PlaywrightFetcher(max_scroll_steps=0)
+        fetcher._context = MockContext()  # type: ignore[assignment]
+        try:
+            res = fetcher.fetch("https://www.linkedin.com/in/test-user/details/projects/")
+            assert res.status == Status.OK
+            assert _WAIT_FOR_DETAILS_ENTITIES_JS in wait_scripts
+            assert _WAIT_FOR_MEANINGFUL_ABOUT_JS not in wait_scripts
+        finally:
+            fetcher.close()
+
     @pytest.mark.live
     def test_live_smoke_test(self) -> None:
         """Live smoke test returning HTML containing the consenting employee's name.
