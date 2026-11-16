@@ -81,11 +81,19 @@ _SUBPAGE_KEY_ALIASES: dict[str, str] = {
 
 
 def _subpage_url_to_section(url_or_key: str) -> str:
-    """Map a subpage URL or key to its canonical parser section key."""
+    """Map a subpage URL or key to its canonical parser section key.
+
+    For example:
+    - 'https://.../overlay/contact-info/' -> 'contact_info'
+    - 'https://.../details/skills/' -> 'skills'
+    - 'https://.../details/licenses-and-certifications/' -> 'certifications'
+    """
     path = urlsplit(url_or_key).path.strip("/")
     segments = [seg.casefold() for seg in path.split("/") if seg]
+    # Check for Contact Info modal overlay
     if "overlay" in segments and "contact-info" in segments:
         return "contact_info"
+    # Check for deep detail subpages (/details/<section>/)
     if "details" in segments:
         idx = segments.index("details")
         if idx + 1 < len(segments):
@@ -98,17 +106,25 @@ def _subpage_url_to_section(url_or_key: str) -> str:
 
 
 def split_saved_raw_html(raw_html_content: str) -> tuple[str, dict[str, str]]:
-    """Split a saved _raw_html/<slug>.html bundle into (main_html, subpages_by_section)."""
+    """Split a saved _raw_html/<slug>.html bundle into (main_html, subpages_by_section).
+
+    The orchestrator saves the primary profile page HTML followed by each crawled subpage
+    separated by `<!-- === SUBPAGE: <url> === -->` markers. This helper parses those markers
+    to isolate each subpage HTML block.
+    """
     matches = list(_SUBPAGE_MARKER_RE.finditer(raw_html_content))
+    # If no subpage markers exist, the entire file is the main profile HTML
     if not matches:
         return raw_html_content, {}
 
+    # Main profile HTML is everything preceding the first subpage marker
     main_html = raw_html_content[: matches[0].start()].strip()
     subpages: dict[str, str] = {}
     for idx, match in enumerate(matches):
         url_or_key = match.group(1)
         sec_key = _subpage_url_to_section(url_or_key)
         start = match.end()
+        # End is either the start of the next subpage marker or EOF
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_html_content)
         chunk = raw_html_content[start:end].strip()
         if chunk:
@@ -117,10 +133,15 @@ def split_saved_raw_html(raw_html_content: str) -> tuple[str, dict[str, str]]:
 
 
 def _extract_subpage_visible_text(sub_html: str, section: str) -> str:
-    """Extract clean visible text from a subpage HTML block for raw_text preservation."""
+    """Extract clean visible text from a subpage HTML block for raw_text preservation.
+
+    Removes script, style, SVG, and template noise before extracting textual lines.
+    """
     sub_soup = BeautifulSoup(sub_html, "lxml")
+    # Decompose script, style, and svg elements to prevent code leakage
     for s_tag in sub_soup.find_all(["script", "style", "noscript", "svg", "template"]):
         s_tag.decompose()
+    # Contact info modal requires targeted selector extraction
     if section == "contact_info":
         modal = _find_contact_info_modal(sub_soup) or sub_soup.select_one("section.pv-contact-info")
         sub_text = modal.get_text(separator="\n", strip=True) if modal else ""
@@ -130,10 +151,15 @@ def _extract_subpage_visible_text(sub_html: str, section: str) -> str:
         ):
             return ""
         return sub_text
+    # Standard subpages: extract text from <main> or root element
     return (sub_soup.find("main") or sub_soup).get_text(separator="\n", strip=True)
 
 
 def _merge_contact(base: ContactInfo | None, incoming: ContactInfo) -> ContactInfo:
+    """Merge incoming contact information into existing base contact details.
+
+    Combines website URLs without duplication and preserves non-empty strings.
+    """
     if base is None:
         return incoming
     combined_websites: list[str] = []
@@ -158,10 +184,12 @@ def _merge_contact(base: ContactInfo | None, incoming: ContactInfo) -> ContactIn
 
 
 def _recompute_missing_fields(doc: ProfileDocument, important_fields: Sequence[str]) -> None:
+    """Recompute the list of missing fields based on populated profile attributes."""
     profile_data = doc.profile.model_dump(exclude_none=True)
     missing: list[str] = []
     for field in important_fields:
         value = profile_data.get(field)
+        # Empty string, None, or empty list is considered missing
         if value is None or (isinstance(value, list) and not value):
             missing.append(field)
         elif isinstance(value, str) and _is_placeholder_value(value):

@@ -161,20 +161,31 @@ def _handle_drift_alarm_check(
     res: WorkerResult,
     stop_event: threading.Event | None,
 ) -> None:
-    """Record a flagged profile and prompt user once 3 profiles show layout drift."""
+    """Record a flagged profile and prompt user once 3 profiles show layout drift.
+
+    SDUI Drift Circuit Breaker:
+    ---------------------------
+    If 3 profiles exhibit layout or parsing anomalies (e.g. missing sections,
+    squashed items, badge leakage into headline), pause extraction and prompt the user.
+    This prevents scraping the whole sheet with a broken parser and burning rate limits.
+    """
     if drift_state is None:
         return
     logger = get_logger()
+    # Synchronize access across multi-worker threads
     with drift_state["lock"]:
         drift_state["flagged"].append(flagged_record)
+        # Trigger alarm prompt when the threshold of 3 flagged profiles is reached
         if len(drift_state["flagged"]) >= 3 and not drift_state["prompted"]:
             drift_state["prompted"] = True
             snapshot = list(drift_state["flagged"])
+            # Generate the offline diagnostic report (WHAT_HAPPENED.txt and section snippets)
             report_dir = write_drift_report(
                 config.output_dir,
                 snapshot,
                 report_dir=drift_state["report_dir"],
             )
+            # Check prompt mechanism: GUI callback, interactive terminal prompt, or non-interactive bypass
             if drift_prompt_fn is not None:
                 should_continue = bool(drift_prompt_fn(snapshot, report_dir))
             elif (
@@ -195,10 +206,12 @@ def _handle_drift_alarm_check(
                     flush=True,
                 )
                 ans = sys.stdin.readline() if sys.stdin is not None else ""
+                # Default to No if user presses enter or types 'n'
                 should_continue = ans.strip().lower().startswith("y")
             else:
                 should_continue = True
 
+            # If user elected not to continue, trigger early shutdown across all workers
             if not should_continue:
                 logger.warning("Stopping pipeline early per user choice after layout drift alarm.")
                 res.stop_triggered = True

@@ -45,16 +45,25 @@ LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login"
 def get_worker_auth_path(base_auth_path: Path | str, worker_index: int, total_workers: int) -> Path:
     """Return the designated authentication state file path for a specific worker.
 
-    If total_workers is 1, uses base_auth_path directly (e.g. .auth/state.json).
-    If total_workers > 1, generates separate paths: .auth/state_worker_1.json, etc.
-    Automatically seeds worker 1 from base_auth_path if worker 1 file is missing.
+    Multi-Worker Account Isolation Architecture:
+    --------------------------------------------
+    Running multiple concurrent workers under a single LinkedIn account session
+    causes immediate session collision, rapid rate limiting, and severe risk of
+    permanent account suspension. Therefore, each concurrent worker is assigned
+    its own dedicated storage state file (.auth/state_worker_1.json, etc.).
+
+    Behavior:
+    - If total_workers <= 1: uses base_auth_path directly (e.g. .auth/state.json).
+    - If total_workers > 1: assigns .auth/state_worker_{index + 1}.json.
+    - Automatically seeds Worker 1 from base_auth_path if available so single-account
+      users don't have to re-login when switching to 1 worker.
     """
     base = Path(base_auth_path)
     if total_workers <= 1:
         return base
 
     worker_path = base.parent / f"state_worker_{worker_index + 1}.json"
-    # Seed worker 1 from existing base session if available
+    # Seed worker 1 from existing base session if available and active
     if worker_index == 0 and not worker_path.exists() and base.exists() and not is_session_expired(base):
         try:
             worker_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,14 +79,20 @@ def ensure_worker_logins(
 ) -> None:
     """Sequentially verify and prompt interactive login for all worker accounts.
 
-    Ensures that login windows never pop open simultaneously on top of each other.
+    Sequential Human-in-the-Loop Prompts:
+    -------------------------------------
+    Ensures that when running multi-worker extraction (--workers N), login browser
+    windows pop open one at a time rather than launching all simultaneously, allowing
+    the operator to cleanly sign into each dedicated account in order.
     """
     total = len(auth_paths)
     for idx, p in enumerate(auth_paths):
         target = Path(p)
+        # Check if this worker's stored cookie is missing or expired
         if is_session_expired(target):
             label = f"Worker {idx + 1} of {total}" if total > 1 else "Primary Account"
             print(f"\n[!] Authentication required for {label} -> {target.name}")
+            # Launch interactive Chromium browser for this specific worker account
             run_interactive_login(target, worker_label=label)
 
 

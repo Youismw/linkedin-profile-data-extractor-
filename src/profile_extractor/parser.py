@@ -877,7 +877,15 @@ def _split_cert_lines(lines: list[str]) -> list[list[str]]:
 def _build_certification_item_from_lines(
     lines: list[str], credential_url: str | None = None
 ) -> CertificationItem:
+    """Build a structured CertificationItem from parsed semantic lines.
+
+    Lines layout:
+    - Line 0: Certificate or credential name (e.g. 'AWS Certified Solutions Architect')
+    - Subsequent lines: Issuing authority, issuance date ('Issued May 2024'), expiration date,
+      and credential identifier.
+    """
     raw_text = " | ".join(lines)
+    # The first line of a credential block is always the credential title
     name: str | None = lines[0] if lines else None
     issuer: str | None = None
     issue_date: str | None = None
@@ -886,15 +894,19 @@ def _build_certification_item_from_lines(
 
     for line in lines[1:]:
         line_lower = line.lower()
+        # Parse 'Issued <date>' metadata
         if "issued" in line_lower and not issue_date:
             issue_date = line
             continue
+        # Parse 'Expires <date>' or expiration metadata
         if "expires" in line_lower and not expiration_date:
             expiration_date = line
             continue
+        # Parse credential ID code string
         if "credential id" in line_lower and not credential_id:
             credential_id = line
             continue
+        # The organization/issuer line is the non-date, non-action line
         if not issuer and not any(
             kw in line_lower for kw in ("show credential", "see credential", "skills:")
         ):
@@ -1000,16 +1012,25 @@ def _split_proj_lines(lines: list[str]) -> list[list[str]]:
 
 
 def _build_project_item_from_lines(lines: list[str], url: str | None = None) -> ProjectItem:
+    """Build a structured ProjectItem from parsed semantic lines.
+
+    Lines layout:
+    - Line 0: Project title (e.g. 'Automated Resume Matcher')
+    - Subsequent lines: Date periods, associated skills chips, and multi-line narrative descriptions.
+    """
     raw_text = " | ".join(lines)
+    # The first line is always the project name
     title: str | None = lines[0] if lines else None
     dates: str | None = None
     description_parts: list[str] = []
     project_skills: list[str] | None = None
 
     for line in lines[1:]:
+        # Detect project timeline or year range
         if not dates and (DATE_RANGE_PATTERN.search(line) or re.search(r"\b\d{4}\b", line)):
             dates = line
             continue
+        # Detect associated skills chip list
         if SKILLS_CHIP_PATTERN.search(line) or line.lower().startswith("skills:"):
             clean_sk = re.sub(
                 r"^(?:skills|associated skills)\s*:\s*", "", line, flags=re.IGNORECASE
@@ -1020,6 +1041,7 @@ def _build_project_item_from_lines(lines: list[str], url: str | None = None) -> 
                 if s.strip() and not re.search(r"\+\d+\s+skills?", s, re.IGNORECASE)
             ]
             continue
+        # Accumulate genuine project description lines (ignoring 'see more' truncators and UI badges)
         if line not in ("…", "...", "more", "see more") and not UI_BADGE_PATTERN.search(line):
             description_parts.append(line)
 

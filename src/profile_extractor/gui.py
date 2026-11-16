@@ -696,7 +696,7 @@ class ExtractorApp:
         # Launch background process with hidden console window on Windows
         creation_flags = 0
         if sys.platform == "win32":
-            creation_flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
         try:
             proc_env = {**os.environ, "PROFILE_EXTRACTOR_GUI_PROMPT": "1"}

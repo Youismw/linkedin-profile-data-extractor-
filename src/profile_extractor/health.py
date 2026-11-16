@@ -95,20 +95,33 @@ class SectionDiagnostic(BaseModel):
 
 
 def _normalize_text(value: str) -> str:
+    """Normalize whitespace and case-fold a string for fuzzy equality matching.
+
+    Replaces multiple consecutive whitespace characters with a single space
+    and converts to lowercase for case-insensitive comparison.
+    """
     return " ".join(value.split()).casefold()
 
 
 def _extract_stated_count(raw_text: str, section: str) -> int | None:
+    """Extract LinkedIn's declared item count from section headers or subpage links.
+
+    Looks for patterns like 'Education (3)' or 'Show all 5 licenses' in raw page text.
+    If multiple counts match, returns the maximum detected count to avoid under-counting.
+    """
     patterns = _STATED_COUNT_PATTERNS.get(section, ())
     counts: list[int] = []
+    # Test each pre-compiled regex for this section against raw text
     for pat in patterns:
         for match in pat.finditer(raw_text):
             try:
+                # Capture the first group representing the numeric quantity
                 val = int(match.group(1))
                 if val > 0:
                     counts.append(val)
             except (ValueError, IndexError):
                 continue
+    # Pick the highest stated number as the expected count
     return max(counts) if counts else None
 
 
@@ -119,13 +132,18 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
     placeholder/header items, skill subheadings, squashed items, or missing
     sections are detected. Never raises or includes candidate PII in messages.
     """
+    # Only evaluate successfully extracted profiles; unreachable profiles have no extracted entities
     if doc.meta.status != Status.OK:
         return []
 
     diagnostics: list[SectionDiagnostic] = []
     profile = doc.profile
 
+    # --------------------------------------------------------------------------
     # Check A: Junk headline (connection degree badge captured as headline)
+    # Detects when LinkedIn's SDUI layout changes placed a '· 3rd' badge where the
+    # parser expected the candidate's professional headline.
+    # --------------------------------------------------------------------------
     if profile.headline and _JUNK_HEADLINE_RE.search(profile.headline.strip()):
         diagnostics.append(
             SectionDiagnostic(
@@ -138,8 +156,13 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # --------------------------------------------------------------------------
     # Check B: Junk section-header items parsed as real entries
+    # Detects when the section title itself (e.g. 'Education', 'Languages') leaked
+    # into the item list as if it were a school or language name.
+    # --------------------------------------------------------------------------
     edu_items = profile.education or []
+    # Flag if any education entry's school name is literally just 'Education'
     if any((item.school or "").strip().casefold() == "education" for item in edu_items):
         diagnostics.append(
             SectionDiagnostic(
@@ -150,6 +173,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
         )
 
     cert_items = profile.certifications or []
+    # Flag if any certification entry's name is just the header 'Licenses & certifications'
     if any((item.name or "").strip().casefold() in _HEADER_ONLY_CERT_NAMES for item in cert_items):
         diagnostics.append(
             SectionDiagnostic(
@@ -163,6 +187,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
         )
 
     lang_items = profile.languages or []
+    # Flag if any language entry's name is just the header 'Languages'
     if any((item.name or "").strip().casefold() in _HEADER_ONLY_LANG_NAMES for item in lang_items):
         diagnostics.append(
             SectionDiagnostic(
@@ -172,7 +197,11 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # --------------------------------------------------------------------------
     # Check C: Skill subheadings / school names / assessment badges captured as skills
+    # In newer SDUI layouts, endorsements, sub-roles, and context lines (e.g. '2 experiences at...')
+    # are rendered in nested divs. This checks if noise text leaked into the skills list.
+    # --------------------------------------------------------------------------
     real_schools = {
         _normalize_text(item.school)
         for item in edu_items
@@ -183,6 +212,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
     skills_list = profile.skills or []
     junk_skill_found = False
     for skill in skills_list:
+        # Check against context subheadings, assessment text, or duplicated university names
         if (
             _SKILL_EXPERIENCE_SUBHEADING_RE.search(skill)
             or _SKILL_INTERN_SUBHEADING_RE.search(skill)
@@ -203,7 +233,12 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # --------------------------------------------------------------------------
     # Check D: Multiple records squashed into a single item's raw string
+    # When LinkedIn wraps all items in a single container without individual <li> nodes,
+    # multiple dates or issuance strings end up in one item instead of separate records.
+    # --------------------------------------------------------------------------
+    # Check for multiple 'Issued <Date>' occurrences inside a single certificate item
     if any(len(_CERT_ISSUED_RE.findall(item.raw or "")) >= 2 for item in cert_items):
         diagnostics.append(
             SectionDiagnostic(
@@ -216,6 +251,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # Check for multiple language proficiency phrases in one language entry
     if any(len(_LANG_PROFICIENCY_RE.findall(item.raw or "")) >= 2 for item in lang_items):
         diagnostics.append(
             SectionDiagnostic(
@@ -227,6 +263,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # Check for multiple graduation/attendance date ranges in one education entry
     if any(len(_EDU_DATE_RANGE_RE.findall(item.raw or "")) >= 2 for item in edu_items):
         diagnostics.append(
             SectionDiagnostic(
@@ -239,10 +276,15 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # --------------------------------------------------------------------------
     # Check E: Sections wrongly routed to other_sections, missing sections, or count mismatches
+    # Detects when parser rules failed to recognize a standard section heading, causing it
+    # to fall through to `other_sections`.
+    # --------------------------------------------------------------------------
     routed_sections_seen: set[str] = set()
     for other in doc.other_sections:
         heading = (other.heading or "").strip()
+        # If 'Licenses & certifications' ended up in other_sections
         if _OTHER_CERTS_HEADING_RE.match(heading) and "certifications" not in routed_sections_seen:
             routed_sections_seen.add("certifications")
             diagnostics.append(
@@ -255,6 +297,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
                     ),
                 )
             )
+        # If 'Languages' ended up in other_sections
         elif _OTHER_LANGS_HEADING_RE.match(heading) and "languages" not in routed_sections_seen:
             routed_sections_seen.add("languages")
             diagnostics.append(
@@ -268,6 +311,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
                 )
             )
 
+    # Calculate valid item counts (filtering out known junk header items)
     raw_text = doc.raw_text or ""
     real_counts: dict[str, int] = {
         "education": sum(
@@ -287,6 +331,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
         ),
     }
 
+    # If raw page text clearly contained an 'Education' heading, but 0 items were parsed
     if _RAW_EDUCATION_HEADING_RE.search(raw_text) and real_counts["education"] == 0:
         diagnostics.append(
             SectionDiagnostic(
@@ -301,6 +346,11 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
             )
         )
 
+    # --------------------------------------------------------------------------
+    # Check F: Stated count vs parsed count mismatch
+    # If LinkedIn stated e.g. 'Show all 5 educations' or 'Skills (12)' on a subpage
+    # but the parser retrieved fewer, flag a count mismatch.
+    # --------------------------------------------------------------------------
     for section in ("education", "certifications", "projects", "skills", "languages"):
         stated = _extract_stated_count(raw_text, section)
         if stated is None or stated <= 0:
@@ -308,6 +358,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
         actual = real_counts[section]
         subpage_present = f"--- Subpage: {section} ---" in raw_text
         if subpage_present and actual < stated:
+            # Subpage was visited but some virtualized items were missed
             diagnostics.append(
                 SectionDiagnostic(
                     section=section,
@@ -321,6 +372,7 @@ def check_profile_health(doc: ProfileDocument) -> list[SectionDiagnostic]:
                 )
             )
         elif not subpage_present and actual == 0:
+            # Main profile mentions items exist, but 0 were parsed and subpage wasn't fetched
             diagnostics.append(
                 SectionDiagnostic(
                     section=section,
