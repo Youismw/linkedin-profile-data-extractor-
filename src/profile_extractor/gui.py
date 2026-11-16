@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -766,7 +767,7 @@ class ExtractorApp:
             for raw_line in iter(proc.stdout.readline, ""):
                 if not raw_line:
                     break
-                if "0 OK" in raw_line and "Execution finished:" in raw_line:
+                if "Execution finished:" in raw_line and re.search(r"\b0 OK\b", raw_line):
                     self._last_run_had_zero_ok = True
                 if "[DRIFT_ALARM_PROMPT]" in raw_line:
                     self.root.after(0, self._handle_drift_prompt, raw_line)
