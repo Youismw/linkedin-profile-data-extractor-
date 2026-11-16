@@ -35,8 +35,10 @@ Module Communications:
 import concurrent.futures
 import hashlib
 import json
+import os
 import random
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -49,9 +51,11 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit
 from bs4 import BeautifulSoup
 
 from profile_extractor.config import ExtractorConfig
+from profile_extractor.drift_report import write_drift_report
 from profile_extractor.fetcher import FakeFetcher, Fetcher
 from profile_extractor.fetcher.login import ensure_worker_logins, get_worker_auth_path
 from profile_extractor.fetcher.playwright_fetcher import PlaywrightFetcher
+from profile_extractor.health import check_profile_health
 from profile_extractor.logging_setup import get_logger
 from profile_extractor.models import (
     ContactInfo,
@@ -78,6 +82,7 @@ from profile_extractor.parser import (
     parse_skills_details,
 )
 from profile_extractor.reader import InputRow, read_profile_urls
+from profile_extractor.urls import sanitize_slug
 from profile_extractor.writer import (
     profile_filename_stem,
     write_profile_json,
@@ -123,6 +128,82 @@ class WorkerResult:
     not_processed_count: int = 0
     stop_triggered: bool = False
     interrupted: bool = False
+    parse_warnings_count: int = 0
+    flagged_profiles: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _save_raw_html_entry(
+    raw_html_file: Path,
+    html: str,
+    subpage_url: str | None = None,
+) -> None:
+    """Persist main profile or appended subpage HTML into _raw_html/<stem>.html."""
+    try:
+        raw_html_file.parent.mkdir(parents=True, exist_ok=True)
+        if subpage_url:
+            block = f"\n\n<!-- === SUBPAGE: {subpage_url} === -->\n{html}"
+            if raw_html_file.exists():
+                with raw_html_file.open("a", encoding="utf-8") as fh:
+                    fh.write(block)
+            else:
+                raw_html_file.write_text(block.lstrip(), encoding="utf-8")
+        else:
+            raw_html_file.write_text(html, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _handle_drift_alarm_check(
+    config: ExtractorConfig,
+    flagged_record: dict[str, Any],
+    drift_state: dict[str, Any] | None,
+    drift_prompt_fn: Callable[[list[dict[str, Any]], Path], bool] | None,
+    res: WorkerResult,
+    stop_event: threading.Event | None,
+) -> None:
+    """Record a flagged profile and prompt user once 3 profiles show layout drift."""
+    if drift_state is None:
+        return
+    logger = get_logger()
+    with drift_state["lock"]:
+        drift_state["flagged"].append(flagged_record)
+        if len(drift_state["flagged"]) >= 3 and not drift_state["prompted"]:
+            drift_state["prompted"] = True
+            snapshot = list(drift_state["flagged"])
+            report_dir = write_drift_report(
+                config.output_dir,
+                snapshot,
+                report_dir=drift_state["report_dir"],
+            )
+            if drift_prompt_fn is not None:
+                should_continue = bool(drift_prompt_fn(snapshot, report_dir))
+            elif (
+                (sys.stdin is not None and sys.stdin.isatty())
+                or os.environ.get("PROFILE_EXTRACTOR_GUI_PROMPT") == "1"
+            ):
+                print("\n" + "=" * 70, flush=True)
+                print(
+                    f"[!] LAYOUT DRIFT ALARM: {len(snapshot)} profile(s) flagged with "
+                    "parsing warnings.",
+                    flush=True,
+                )
+                print(f"    Diagnostic report saved to: {report_dir}", flush=True)
+                print("=" * 70, flush=True)
+                print(
+                    f"[DRIFT_ALARM_PROMPT] Layout drift detected on {len(snapshot)} profiles "
+                    f"(report: {report_dir}). Continue extraction? [y/N]: ",
+                    flush=True,
+                )
+                ans = sys.stdin.readline() if sys.stdin is not None else ""
+                should_continue = ans.strip().lower().startswith("y")
+            else:
+                should_continue = True
+
+            if not should_continue:
+                logger.warning("Stopping pipeline early per user choice after layout drift alarm.")
+                res.stop_triggered = True
+                if stop_event is not None:
+                    stop_event.set()
 
 
 def _count_field_richness(items: Any) -> int:
@@ -562,12 +643,16 @@ def _process_candidate_batch(
     worker_idx: int = 0,
     total_workers: int = 1,
     stop_event: threading.Event | None = None,
+    raw_html_dir: Path | None = None,
+    drift_prompt_fn: Callable[[list[dict[str, Any]], Path], bool] | None = None,
+    drift_state: dict[str, Any] | None = None,
 ) -> WorkerResult:
     """Execute sequential extraction loop for one worker partition of candidate rows."""
     logger = get_logger()
     res = WorkerResult()
     num_rows = len(rows)
     prefix = f"[Worker {worker_idx + 1}] " if total_workers > 1 else ""
+    resolved_raw_dir = raw_html_dir or (config.output_dir / "_raw_html")
 
     try:
         for idx, row in enumerate(rows):
@@ -580,6 +665,15 @@ def _process_candidate_batch(
 
             slug = row.slug or ""
             url = row.normalized or ""
+            stem = filename_stems.get(row.row_number) or profile_filename_stem(slug, url)
+            raw_html_file = resolved_raw_dir / f"{stem}.html"
+            fetcher_handles_dump = (
+                isinstance(fetcher, PlaywrightFetcher)
+                and fetcher.save_raw_html_dir is not None
+                and Path(fetcher.save_raw_html_dir).resolve() == resolved_raw_dir.resolve()
+                and sanitize_slug(slug, fallback_seed=url) == stem
+            )
+
             logger.info(
                 "%sRow %d: visiting candidate profile (%d of %d)...",
                 prefix,
@@ -593,6 +687,9 @@ def _process_candidate_batch(
                 fetch_res = fetcher.fetch(url)
 
                 if fetch_res.status == Status.OK:
+                    if fetch_res.html and not fetcher_handles_dump:
+                        _save_raw_html_entry(raw_html_file, fetch_res.html)
+
                     doc = parse_profile(
                         source_url=url,
                         slug=slug,
@@ -721,6 +818,11 @@ def _process_candidate_batch(
                                 continue
                             if not detail_res.html:
                                 continue
+
+                            if not fetcher_handles_dump:
+                                _save_raw_html_entry(
+                                    raw_html_file, detail_res.html, subpage_url=detail_url
+                                )
 
                             # Preserve subpage raw text in doc.raw_text for recovery audit
                             sub_soup = BeautifulSoup(detail_res.html, "lxml")
@@ -911,6 +1013,13 @@ def _process_candidate_batch(
                                 if not supplemental_res.html:
                                     continue
 
+                                if not fetcher_handles_dump:
+                                    _save_raw_html_entry(
+                                        raw_html_file,
+                                        supplemental_res.html,
+                                        subpage_url=detail_url,
+                                    )
+
                                 page_text, page_heading = _extract_supplemental_page_text(
                                     supplemental_res.html, section
                                 )
@@ -971,9 +1080,49 @@ def _process_candidate_batch(
                         _recalculate_missing_fields(doc, config.important_fields)
 
                     if doc.meta.status == Status.OK:
+                        diagnostics = []
+                        try:
+                            diagnostics = check_profile_health(doc)
+                        except Exception as health_err:
+                            logger.debug(
+                                "%sRow %d: health check skipped (%s)",
+                                prefix,
+                                row.row_number,
+                                health_err,
+                            )
+
+                        flagged_rec: dict[str, Any] | None = None
+                        if diagnostics:
+                            doc.meta.parse_warnings = [d.message for d in diagnostics]
+                            res.parse_warnings_count += 1
+                            flagged_rec = {
+                                "slug": slug,
+                                "source_url": url,
+                                "json_path": str(profiles_dir / f"{stem}.json"),
+                                "raw_html_path": str(raw_html_file),
+                                "diagnostics": [d.model_dump() for d in diagnostics],
+                            }
+                            res.flagged_profiles.append(flagged_rec)
+                            logger.warning(
+                                "%sRow %d: %d parse drift warning(s) detected",
+                                prefix,
+                                row.row_number,
+                                len(diagnostics),
+                            )
+
                         write_profile_json(doc, profiles_dir, filename_stems.get(row.row_number))
                         res.ok_count += 1
                         logger.info("%sRow %d: ok", prefix, row.row_number)
+
+                        if flagged_rec is not None:
+                            _handle_drift_alarm_check(
+                                config=config,
+                                flagged_record=flagged_rec,
+                                drift_state=drift_state,
+                                drift_prompt_fn=drift_prompt_fn,
+                                res=res,
+                                stop_event=stop_event,
+                            )
                     else:
                         _remove_stale_unreachable_json(
                             profiles_dir, filename_stems.get(row.row_number) or slug
@@ -1087,6 +1236,7 @@ def run_pipeline(
     config: ExtractorConfig,
     fetcher: Fetcher,
     sleep_fn: Callable[[float], None] = time.sleep,
+    drift_prompt_fn: Callable[[list[dict[str, Any]], Path], bool] | None = None,
 ) -> RunSummary:
     """Execute the end-to-end extraction pipeline.
 
@@ -1195,6 +1345,15 @@ def run_pipeline(
     # --------------------------------------------------------------------------
     profiles_dir = config.output_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
+    raw_html_dir = config.output_dir / "_raw_html"
+    drift_state: dict[str, Any] = {
+        "lock": threading.Lock(),
+        "flagged": [],
+        "prompted": False,
+        "report_dir": (
+            config.output_dir / "drift_reports" / datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
+        ),
+    }
 
     # --------------------------------------------------------------------------
     # 4. Processing Across Valid Candidate Rows (Single or Multi-Worker)
@@ -1212,6 +1371,9 @@ def run_pipeline(
                 sleep_fn=sleep_fn,
                 worker_idx=0,
                 total_workers=1,
+                raw_html_dir=raw_html_dir,
+                drift_prompt_fn=drift_prompt_fn,
+                drift_state=drift_state,
             )
             ok_count += worker_res.ok_count
             unreachable_count += worker_res.unreachable_count
@@ -1276,6 +1438,9 @@ def run_pipeline(
                         worker_idx=w_idx,
                         total_workers=actual_workers,
                         stop_event=stop_event,
+                        raw_html_dir=raw_html_dir,
+                        drift_prompt_fn=drift_prompt_fn,
+                        drift_state=drift_state,
                     )
                 finally:
                     if w_fetcher is not fetcher:
@@ -1370,6 +1535,16 @@ def run_pipeline(
         unreachable_by_status[rec.status] = unreachable_by_status.get(rec.status, 0) + 1
     genuinely_missing_count = unreachable_by_status.get("genuinely_missing", 0)
 
+    all_flagged: list[dict[str, Any]] = list(drift_state["flagged"])
+    drift_report_dir_str: str | None = None
+    if all_flagged:
+        final_report_dir = write_drift_report(
+            config.output_dir,
+            all_flagged,
+            report_dir=drift_state["report_dir"],
+        )
+        drift_report_dir_str = str(final_report_dir)
+
     summary = RunSummary(
         started_at=started_at_str,
         finished_at=finished_at_str,
@@ -1385,6 +1560,8 @@ def run_pipeline(
         unreachable_by_status=unreachable_by_status,
         not_processed_count=not_processed_count,
         output_dir=str(config.output_dir),
+        parse_warnings_count=len(all_flagged),
+        drift_report_dir=drift_report_dir_str,
     )
 
     write_run_summary(summary, config.output_dir)

@@ -164,3 +164,59 @@ def test_gui_workers_in_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     finally:
         root.destroy()
 
+
+def test_gui_console_expand_toggle_and_drift_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify console expand/restore button and drift alarm interactive prompt."""
+    mock_state_file = tmp_path / ".run_state.json"
+    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = ExtractorApp(root)
+
+        # Initially not expanded: both panes are present in PanedWindow
+        assert str(app._console_expanded) == "False"
+        assert len(app.paned_window.panes()) == 2  # type: ignore[no-untyped-call]
+        assert "Expand" in str(app.toggle_console_btn.cget("text"))
+
+        # Expand console: top controls hidden, bottom pane takes full window
+        app._toggle_console_expand()
+        assert str(app._console_expanded) == "True"
+        assert len(app.paned_window.panes()) == 1  # type: ignore[no-untyped-call]
+        assert "Restore" in str(app.toggle_console_btn.cget("text"))
+
+        # Restore console: top controls re-inserted at index 0
+        app._toggle_console_expand()
+        assert str(app._console_expanded) == "False"
+        assert len(app.paned_window.panes()) == 2  # type: ignore[no-untyped-call]
+        assert "Expand" in str(app.toggle_console_btn.cget("text"))
+
+        # Test drift prompt sending y/n to process stdin
+        written: list[str] = []
+
+        class MockStdin:
+            def write(self, data: str) -> int:
+                written.append(data)
+                return len(data)
+
+            def flush(self) -> None:
+                pass
+
+        class MockProc:
+            stdin = MockStdin()
+
+        monkeypatch.setattr(app, "process", MockProc())
+        monkeypatch.setattr(messagebox, "askyesno", lambda *_a, **_kw: True)
+        app._handle_drift_prompt("[DRIFT_ALARM_PROMPT] test")
+        assert written[-1] == "y\n"
+
+        monkeypatch.setattr(messagebox, "askyesno", lambda *_a, **_kw: False)
+        app._handle_drift_prompt("[DRIFT_ALARM_PROMPT] test")
+        assert written[-1] == "n\n"
+    finally:
+        root.destroy()
+
+

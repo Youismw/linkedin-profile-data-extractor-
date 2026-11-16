@@ -42,6 +42,13 @@ from pathlib import Path
 # Configuration loaders: read TOML files and merge command-line flags
 from profile_extractor.config import load_config, read_config_file
 
+# Offline drift reporting and rework kit commands
+from profile_extractor.drift_report import (
+    run_add_fixture_command,
+    run_reparse_command,
+    run_reparse_run_command,
+)
+
 # Fetcher implementations and session authentication utilities
 from profile_extractor.fetcher import (
     FakeFetcher,
@@ -392,6 +399,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Launch the graphical user interface assistant",
     )
 
+    # --------------------------------------------------------------------------
+    # Subcommands: Offline drift rework kit ('reparse', 'add-fixture', 'reparse-run')
+    # --------------------------------------------------------------------------
+    reparse_parser = subparsers.add_parser(
+        "reparse",
+        help="Re-run the parser offline on HTML saved in a drift report folder",
+    )
+    reparse_parser.add_argument(
+        "report_path",
+        help="Path to a drift report folder (or output directory containing drift_reports/)",
+    )
+
+    add_fixture_parser = subparsers.add_parser(
+        "add-fixture",
+        help="Copy failing HTML from a drift report into a gitignored local regression test",
+    )
+    add_fixture_parser.add_argument(
+        "report_path",
+        help="Path to a drift report folder (or output directory containing drift_reports/)",
+    )
+    add_fixture_parser.add_argument(
+        "--fixture-dir",
+        default=None,
+        help="Optional target directory (defaults to tests/fixtures/private/drift/<report>)",
+    )
+
+    reparse_run_parser = subparsers.add_parser(
+        "reparse-run",
+        help="Regenerate all profile JSONs in an output folder from saved _raw_html/*.html",
+    )
+    reparse_run_parser.add_argument(
+        "output_dir",
+        help="Path to a past output directory containing _raw_html/",
+    )
+
     return parser
 
 
@@ -421,6 +463,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "reset-session",
         "reset",
         "gui",
+        "reparse",
+        "add-fixture",
+        "reparse-run",
         "-h",
         "--help",
     ]
@@ -435,6 +480,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 0
+
+    # ==========================================================================
+    # Handler: Offline drift rework kit
+    # ==========================================================================
+    if args.command == "reparse":
+        try:
+            return run_reparse_command(Path(args.report_path))
+        except Exception as e:
+            print(f"[ERROR] reparse failed: {e}", file=sys.stderr)
+            return 1
+
+    if args.command == "add-fixture":
+        try:
+            fixture_dir = Path(args.fixture_dir) if args.fixture_dir else None
+            run_add_fixture_command(Path(args.report_path), fixture_root=fixture_dir)
+            return 0
+        except Exception as e:
+            print(f"[ERROR] add-fixture failed: {e}", file=sys.stderr)
+            return 1
+
+    if args.command == "reparse-run":
+        try:
+            return run_reparse_run_command(Path(args.output_dir))
+        except Exception as e:
+            print(f"[ERROR] reparse-run failed: {e}", file=sys.stderr)
+            return 1
 
     # ==========================================================================
     # Handler: logout / clean-session / reset-session / reset
@@ -747,6 +818,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 auth_state_path=config.auth_state_path,
                 headless=config.headless,
                 timeout_seconds=config.page_timeout_seconds,
+                save_raw_html_dir=config.output_dir / "_raw_html",
                 max_scroll_steps=config.scroll_steps,
                 scroll_step_delay_ms=config.scroll_step_delay_ms,
                 about_wait_ms=config.about_wait_ms,
@@ -764,6 +836,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{summary.not_processed_count} Not Processed. "
                 f"Output saved to {summary.output_dir}"
             )
+            raw_html_dir = config.output_dir / "_raw_html"
+            if raw_html_dir.is_dir():
+                print(
+                    f"[INFO] Raw HTML backups saved in {raw_html_dir} "
+                    "(contains personal profile data; gitignored)."
+                )
+            if summary.parse_warnings_count > 0 and summary.drift_report_dir:
+                print(
+                    "\n[DRIFT ALARM] Layout/parse warnings detected on "
+                    f"{summary.parse_warnings_count} profile(s)!"
+                )
+                print(f"              Read: {Path(summary.drift_report_dir) / 'WHAT_HAPPENED.txt'}")
+                print(
+                    f"              Offline test: python -m profile_extractor reparse "
+                    f'"{summary.drift_report_dir}"\n'
+                )
 
             # Automatically pop open a single Windows File Explorer window directly into profiles/
             # (Skipped if --no-open was requested, preventing Windows from locking the output folder)

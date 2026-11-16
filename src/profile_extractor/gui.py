@@ -159,10 +159,22 @@ class ExtractorApp:
 
         ttk.Separator(main_container, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(3, 8))
 
+        # Resizable Vertical Split between Controls (Top) and Console (Bottom)
+        self.paned_window = ttk.PanedWindow(main_container, orient=tk.VERTICAL)
+        self.paned_window.pack(fill=tk.BOTH, expand=True)
+
+        self.top_controls_frame = ttk.Frame(self.paned_window)
+        self.paned_window.add(self.top_controls_frame, weight=0)
+
+        self.bottom_console_pane = ttk.Frame(self.paned_window)
+        self.paned_window.add(self.bottom_console_pane, weight=1)
+
         # ----------------------------------------------------------------------
         # 2. File & Directory Locations Frame
         # ----------------------------------------------------------------------
-        paths_frame = ttk.LabelFrame(main_container, text=" File & Folder Locations ", padding=8)
+        paths_frame = ttk.LabelFrame(
+            self.top_controls_frame, text=" File & Folder Locations ", padding=8
+        )
         paths_frame.pack(fill=tk.X, pady=(0, 8))
 
         # Candidate Spreadsheet Row
@@ -210,7 +222,7 @@ class ExtractorApp:
         # 3. Flare Settings & Speed Controls Frame
         # ----------------------------------------------------------------------
         flares_frame = ttk.LabelFrame(
-            main_container, text=" Crawler Flares & Speed Controls ", padding=8
+            self.top_controls_frame, text=" Crawler Flares & Speed Controls ", padding=8
         )
         flares_frame.pack(fill=tk.X, pady=(0, 8))
 
@@ -408,7 +420,7 @@ class ExtractorApp:
         # ----------------------------------------------------------------------
         # 4. Action Toolbar & Status Bar
         # ----------------------------------------------------------------------
-        action_frame = ttk.Frame(main_container)
+        action_frame = ttk.Frame(self.bottom_console_pane)
         action_frame.pack(fill=tk.X, pady=(0, 8))
 
         self.start_btn = ttk.Button(
@@ -455,18 +467,27 @@ class ExtractorApp:
         # ----------------------------------------------------------------------
         # 5. Live Console Log Area
         # ----------------------------------------------------------------------
-        console_frame = ttk.LabelFrame(main_container, text=" Live Pipeline Console ", padding=8)
+        console_frame = ttk.LabelFrame(
+            self.bottom_console_pane, text=" Live Pipeline Console ", padding=8
+        )
         console_frame.pack(fill=tk.BOTH, expand=True)
 
         console_bar = ttk.Frame(console_frame)
         console_bar.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(
             console_bar,
-            text="Real-time execution logs and progress audits:",
+            text="Real-time execution logs and progress audits (drag divider above or click Expand):",
             style="Hint.TLabel",
         ).pack(side=tk.LEFT)
         clear_btn = ttk.Button(console_bar, text="Clear Log", command=self._clear_log)
         clear_btn.pack(side=tk.RIGHT)
+        self._console_expanded: bool = False
+        self.toggle_console_btn = ttk.Button(
+            console_bar,
+            text="⬆ Expand Console",
+            command=self._toggle_console_expand,
+        )
+        self.toggle_console_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         self.log_text = ScrolledText(
             console_frame,
@@ -552,6 +573,17 @@ class ExtractorApp:
         """Clear console log output."""
         self.log_text.delete("1.0", tk.END)
 
+    def _toggle_console_expand(self) -> None:
+        """Toggle full-window console expansion by hiding or restoring the top controls pane."""
+        if not self._console_expanded:
+            self.paned_window.forget(self.top_controls_frame)
+            self._console_expanded = True
+            self.toggle_console_btn.config(text="⬇ Restore Console")
+        else:
+            self.paned_window.insert(0, self.top_controls_frame, weight=0)
+            self._console_expanded = False
+            self.toggle_console_btn.config(text="⬆ Expand Console")
+
     def _log_line(self, line: str, tag: str | None = None) -> None:
         """Append a single line of log text with appropriate color coding.
 
@@ -564,7 +596,13 @@ class ExtractorApp:
             lower = line.lower()
             if "[error]" in lower or "traceback" in lower or "failed" in lower:
                 tag = "error"
-            elif "[warning]" in lower or "blocked" in lower or "rate limit" in lower:
+            elif (
+                "[warning]" in lower
+                or "blocked" in lower
+                or "rate limit" in lower
+                or "drift alarm" in lower
+                or "drift warning" in lower
+            ):
                 tag = "warning"
             elif "ok" in lower or "completed" in lower or "execution finished" in lower:
                 tag = "success"
@@ -661,14 +699,17 @@ class ExtractorApp:
             creation_flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
 
         try:
+            proc_env = {**os.environ, "PROFILE_EXTRACTOR_GUI_PROMPT": "1"}
             self.process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
                 encoding="utf-8",
                 errors="replace",
+                env=proc_env,
                 creationflags=creation_flags,
             )
         except Exception as e:
@@ -727,6 +768,8 @@ class ExtractorApp:
                     break
                 if "0 OK" in raw_line and "Execution finished:" in raw_line:
                     self._last_run_had_zero_ok = True
+                if "[DRIFT_ALARM_PROMPT]" in raw_line:
+                    self.root.after(0, self._handle_drift_prompt, raw_line)
                 # Schedule safe UI update on main Tkinter thread
                 self.root.after(0, self._log_line, raw_line)
         except Exception as e:
@@ -736,6 +779,25 @@ class ExtractorApp:
                 proc.stdout.close()
             rc = proc.wait()
             self.root.after(0, self._on_process_finished, rc)
+
+    def _handle_drift_prompt(self, prompt_line: str) -> None:
+        """Ask the user whether to continue or stop when layout drift triggers."""
+        should_continue = messagebox.askyesno(
+            "Layout Drift Alarm",
+            "LinkedIn layout/parse warnings were detected on 3 profiles.\n"
+            "A diagnostic drift report has been saved in your output folder.\n\n"
+            "Do you want to continue extracting the remaining profiles?",
+        )
+        proc = self.process
+        if proc is not None and proc.stdin is not None:
+            try:
+                proc.stdin.write("y\n" if should_continue else "n\n")
+                proc.stdin.flush()
+            except Exception:
+                pass
+        if not should_continue:
+            self.status_var.set("Stopping After Drift Alarm...")
+            self.status_display.config(foreground="#ce9178")
 
     def _on_process_finished(self, returncode: int) -> None:
         """Handle completion of the background extraction process.

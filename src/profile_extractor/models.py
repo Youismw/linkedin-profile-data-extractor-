@@ -256,6 +256,7 @@ class Meta(BaseModel):
         reason: Specific reason enum if unreachable, else None.
         fetched_at: ISO 8601 UTC timestamp of when data was pulled.
         missing_fields: List of expected core fields that had no data in DOM.
+        parse_warnings: List of layout/parse drift warnings (omitted when empty).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -269,6 +270,7 @@ class Meta(BaseModel):
         default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
     )
     missing_fields: list[str] = Field(default_factory=list)
+    parse_warnings: list[str] = Field(default_factory=list)
 
 
 class ProfileDocument(BaseModel):
@@ -294,11 +296,16 @@ class ProfileDocument(BaseModel):
         Rule 1: If unreachable, 'profile' is {} and 'other_sections' is [].
         Rule 2: If ok, missing fields (None values) are stripped from 'profile'.
         Rule 3: 'raw_text' is appended at the very end of the JSON object.
+        Rule 4: 'parse_warnings' is omitted from 'meta' when empty.
         """
+        meta_dict = self.meta.model_dump()
+        if not meta_dict.get("parse_warnings"):
+            meta_dict.pop("parse_warnings", None)
+
         # Unreachable profile serialization
         if self.meta.status == Status.UNREACHABLE:
             res: dict[str, Any] = {
-                "meta": self.meta.model_dump(),
+                "meta": meta_dict,
                 "profile": {},
                 "other_sections": [],
             }
@@ -309,7 +316,7 @@ class ProfileDocument(BaseModel):
         # Normal profile serialization
         profile_data = self.profile.model_dump(exclude_none=True)
         res = {
-            "meta": self.meta.model_dump(),
+            "meta": meta_dict,
             "profile": profile_data,
             "other_sections": [section.model_dump() for section in self.other_sections],
         }
@@ -395,4 +402,6 @@ class RunSummary(BaseModel):
     unreachable_by_status: dict[str, int] = Field(default_factory=dict)
     not_processed_count: int
     output_dir: str
+    parse_warnings_count: int = 0
+    drift_report_dir: str | None = None
     tool_version: str = "0.1.0"
