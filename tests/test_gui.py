@@ -91,41 +91,6 @@ def test_gui_app_initialization_and_slider_events(tmp_path: Path, monkeypatch: p
         root.destroy()
 
 
-def test_gui_zero_ok_detection_avoids_multiples_of_ten(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify '30 OK' does not falsely trigger the '0 OK' zero-profiles warning."""
-    import io
-
-    mock_state_file = tmp_path / ".run_state.json"
-    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = ExtractorApp(root)
-
-        class MockProc:
-            def __init__(self, output: str) -> None:
-                self.stdout = io.StringIO(output)
-
-            def wait(self) -> int:
-                return 0
-
-        # 30 OK must NOT set _last_run_had_zero_ok
-        app._last_run_had_zero_ok = False
-        app.process = MockProc("Execution finished: 30 OK, 0 Unreachable\n")  # type: ignore[assignment]
-        app._stream_output()
-        assert app._last_run_had_zero_ok is False
-
-        # Genuine 0 OK MUST set _last_run_had_zero_ok
-        app._last_run_had_zero_ok = False
-        app.process = MockProc("Execution finished: 0 OK, 30 Unreachable\n")  # type: ignore[assignment]
-        app._stream_output()
-        assert app._last_run_had_zero_ok is True
-    finally:
-        root.destroy()
-
 
 def test_gui_purge_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that _purge_presets deletes auth and state files and clears entry variables."""
@@ -159,41 +124,6 @@ def test_gui_purge_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     finally:
         root.destroy()
 
-
-def test_gui_zero_ok_detection_avoids_multiples_of_ten(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify '30 OK' does not falsely trigger the '0 OK' zero-profiles warning."""
-    import io
-
-    mock_state_file = tmp_path / ".run_state.json"
-    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = ExtractorApp(root)
-
-        class MockProc:
-            def __init__(self, output: str) -> None:
-                self.stdout = io.StringIO(output)
-
-            def wait(self) -> int:
-                return 0
-
-        # 30 OK must NOT set _last_run_had_zero_ok
-        app._last_run_had_zero_ok = False
-        app.process = MockProc("Execution finished: 30 OK, 0 Unreachable\n")  # type: ignore[assignment]
-        app._stream_output()
-        assert app._last_run_had_zero_ok is False
-
-        # Genuine 0 OK MUST set _last_run_had_zero_ok
-        app._last_run_had_zero_ok = False
-        app.process = MockProc("Execution finished: 0 OK, 30 Unreachable\n")  # type: ignore[assignment]
-        app._stream_output()
-        assert app._last_run_had_zero_ok is True
-    finally:
-        root.destroy()
 
 
 def test_gui_workers_in_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -236,41 +166,6 @@ def test_gui_workers_in_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     finally:
         root.destroy()
 
-
-def test_gui_zero_ok_detection_avoids_multiples_of_ten(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify '30 OK' does not falsely trigger the '0 OK' zero-profiles warning."""
-    import io
-
-    mock_state_file = tmp_path / ".run_state.json"
-    monkeypatch.setattr("profile_extractor.gui.STATE_FILE", mock_state_file)
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        app = ExtractorApp(root)
-
-        class MockProc:
-            def __init__(self, output: str) -> None:
-                self.stdout = io.StringIO(output)
-
-            def wait(self) -> int:
-                return 0
-
-        # 30 OK must NOT set _last_run_had_zero_ok
-        app._last_run_had_zero_ok = False
-        app.process = MockProc("Execution finished: 30 OK, 0 Unreachable\n")  # type: ignore[assignment]
-        app._stream_output()
-        assert app._last_run_had_zero_ok is False
-
-        # Genuine 0 OK MUST set _last_run_had_zero_ok
-        app._last_run_had_zero_ok = False
-        app.process = MockProc("Execution finished: 0 OK, 30 Unreachable\n")  # type: ignore[assignment]
-        app._stream_output()
-        assert app._last_run_had_zero_ok is True
-    finally:
-        root.destroy()
 
 
 def test_gui_console_expand_toggle_and_drift_prompt(
@@ -362,5 +257,6 @@ def test_gui_zero_ok_detection_avoids_multiples_of_ten(
         assert app._last_run_had_zero_ok is True
     finally:
         root.destroy()
+
 
 
