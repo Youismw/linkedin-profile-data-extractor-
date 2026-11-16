@@ -66,16 +66,27 @@ _CAPTURE_PROFILE_CARDS_JS = r"""() => {
     // those cards too, but only on /details/skills/ to avoid broad DOM snapshots
     // or changing capture behaviour on ordinary profile pages.
     const selectors = isSkillsDetails
-        ? profileCardSelectors + ', div[componentkey*="entity-collection-item"]'
+        ? profileCardSelectors + ', div[componentkey*="entity-collection-item"], div[componentkey^="com.linkedin.sdui.profile.skill"]'
         : profileCardSelectors;
     const cards = root.querySelectorAll(selectors);
 
     for (const card of cards) {
         let id = card.getAttribute('id');
         const componentKey = card.getAttribute('componentkey');
+        if (
+            isSkillsDetails
+            && componentKey
+            && componentKey.startsWith('com.linkedin.sdui.profile.skill')
+            && card.closest('div[componentkey*="entity-collection-item"]')
+        ) {
+            continue;
+        }
         const isSkillEntityItem = isSkillsDetails
             && componentKey
-            && componentKey.includes('entity-collection-item');
+            && (
+                componentKey.includes('entity-collection-item')
+                || componentKey.startsWith('com.linkedin.sdui.profile.skill')
+            );
         if (!id && card.getAttribute('data-section') === 'about') {
             id = 'about';
             try { card.setAttribute('id', id); } catch (e) {}
@@ -258,8 +269,6 @@ def _about_section_node(soup: BeautifulSoup) -> Tag | None:
     from profile_extractor.parser_rules import ABOUT_PATTERNS
 
     for sec in soup.find_all("section"):
-        if not isinstance(sec, Tag):
-            continue
         heading = _extract_section_heading(sec)
         if _matches_any_pattern(heading, ABOUT_PATTERNS) or str(sec.get("id") or "").lower() == "about":
             return sec

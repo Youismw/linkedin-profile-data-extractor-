@@ -54,6 +54,7 @@ from profile_extractor.parser_rules import (
     ABOUT_PATTERNS,
     ACTIVITIES_PATTERN,
     CERTIFICATIONS_PATTERNS,
+    CONNECTION_DEGREE_PATTERN,
     DATE_RANGE_PATTERN,
     DURATION_PATTERN,
     EDUCATION_PATTERNS,
@@ -186,15 +187,195 @@ def _filter_top_level_tags(tags: Sequence[Tag]) -> list[Tag]:
     ]
 
 
+# Regex to match standalone section titles (e.g. "Education", "Skills (19)", "Licenses & certifications")
+_SECTION_HEADER_ONLY_RE = re.compile(
+    r"^(?:education|experience|work experience|skills|licenses?\s*(?:&|and)?\s*certifications?|"
+    r"certifications?|projects?|languages?|volunteering|honors?\s*(?:&|and)?\s*awards?|"
+    r"test\s+scores?|courses?|organizations?|publications?|patents?|recommendations?)"
+    r"(?:\s*\(\d+\))?$",
+    re.IGNORECASE,
+)
+# Matches "Show all" action buttons that should not be extracted as items
+_SHOW_ALL_ONLY_RE = re.compile(r"^show\s+all\b", re.IGNORECASE)
+# Matches category filter tab pill strings (e.g. "All | Industry Knowledge | Tools & Technologies")
+_FILTER_PILLS_RE = re.compile(
+    r"^(?:all|industry knowledge|tools\s*&\s*technologies|interpersonal skills|other skills|languages)"
+    r"(?:\s*\|\s*(?:all|industry knowledge|tools\s*&\s*technologies|interpersonal skills|other skills|languages))*$",
+    re.IGNORECASE,
+)
+
+
+def _is_header_or_footer_node(node: Tag) -> bool:
+    """Return True if node is an empty spacer, section heading, filter tab bar, or 'Show all' footer.
+    
+    This prevents UI headers, navigation buttons, and category filter bars from being treated
+    as profile entries (such as preventing 'Education' from being parsed as a school name).
+    """
+    # 1. Structural semantic tags that are inherently headings, dividers, or navigation
+    if node.name in ("h1", "h2", "h3", "header", "hr", "nav"):
+        return True
+    
+    # 2. Empty or whitespace-only nodes
+    txt = _clean_text(node.get_text(" ", strip=True))
+    if not txt:
+        return True
+        
+    # 3. Text exactly matching section headings or 'Show all' action links
+    if _SECTION_HEADER_ONLY_RE.match(txt) or _SHOW_ALL_ONLY_RE.match(txt):
+        return True
+        
+    # 4. Pipe-joined filter pills (e.g. on /details/skills/ pages)
+    pipe_txt = " | ".join(_clean_text(s) for s in node.stripped_strings if _clean_text(s))
+    if _FILTER_PILLS_RE.match(pipe_txt):
+        return True
+    return False
+
+
+def _is_nested_endorsement_listitem(el: Tag, search_root: Tag) -> bool:
+    """Return True if a [role='listitem'] is a nested context/endorsement row inside a skill card.
+    
+    On LinkedIn skill cards, the endorsement list or experience connection list often uses
+    role='list' and role='listitem'. This function detects if the list item is a sub-item
+    belonging to an outer skill card rather than being a top-level entity item itself.
+    """
+    # Check if element is enclosed by an ARIA role="list" container
+    role_list = el.find_parent(attrs={"role": "list"})
+    if not isinstance(role_list, Tag):
+        return False
+        
+    # Walk up from role_list up to 3 levels within search_root to verify if the card
+    # has a preceding title block (e.g. the actual skill name <p> before the endorsement list).
+    curr: Tag | None = role_list
+    for _ in range(3):
+        if curr is None or curr is search_root:
+            break
+        parent = curr.parent
+        if not isinstance(parent, Tag):
+            break
+        for sib in parent.children:
+            if sib is curr:
+                break
+            # If a sibling before this list has non-empty text, it's the skill heading
+            if isinstance(sib, Tag) and _clean_text(sib.get_text(" ", strip=True)):
+                return True
+        curr = parent
+    return False
+
+
+def _unwrap_sdui_container_items(root: Tag) -> list[Tag]:
+    """Unwrap SDUI section or LazyColumn wrappers to locate individual item tags.
+    
+    Modern LinkedIn SDUI pages nest collection items deeply inside multiple wrapper divs.
+    This helper unrolls wrapper layers while filtering out headers and footers, exposing
+    the true individual cards for parsing.
+    """
+    curr = root
+    # Traverse down through wrapper div hierarchies up to 8 levels deep
+    for _ in range(8):
+        raw_children = [c for c in curr.children if isinstance(c, Tag)]
+        
+        # Check if any child tag is a section header (e.g. <h2>Education</h2>)
+        had_hdr = any(
+            _is_header_or_footer_node(c) and bool(_clean_text(c.get_text(" ", strip=True)))
+            for c in raw_children
+        )
+        # Exclude header and footer nodes to focus on content nodes
+        children = [c for c in raw_children if not _is_header_or_footer_node(c)]
+        
+        if had_hdr:
+            # If all non-header children are inline/leaf elements (<p>, <span>) rather than card containers,
+            # keep curr intact so multi-item line splitters can process its full lines.
+            if children and all(
+                c.name in ("p", "span", "strong", "b", "em", "i", "a") for c in children
+            ):
+                return [curr]
+                
+            # If exactly one list container remains below the header, inspect inside it
+            if len(children) == 1:
+                list_box = children[0]
+                raw_leaves = [
+                    c
+                    for c in list_box.children
+                    if isinstance(c, Tag) and not _is_header_or_footer_node(c)
+                ]
+                # If list_box contains direct inline leaves, preserve list_box for line parsing
+                if raw_leaves and all(
+                    c.name in ("p", "span", "strong", "b", "em", "i", "a") for c in raw_leaves
+                ):
+                    return [list_box]
+
+                items = [
+                    c
+                    for c in list_box.children
+                    if isinstance(c, Tag) and not _is_header_or_footer_node(c)
+                ]
+                # If nested list_box still has a single wrapper containing items, inspect one level deeper
+                if len(items) == 1:
+                    sub_items = [
+                        c
+                        for c in items[0].children
+                        if isinstance(c, Tag) and not _is_header_or_footer_node(c)
+                    ]
+                    non_trivial = [
+                        s
+                        for s in sub_items
+                        if len([x for x in s.stripped_strings if _clean_text(x)]) >= 2
+                    ]
+                    # Verify multiple distinct items are present
+                    if len(sub_items) >= 2 and len(non_trivial) >= 2:
+                        return sub_items
+                return items if items else [list_box]
+            return children
+            
+        if len(children) == 1:
+            # Check if this single child is a list wrapper around multiple cards separated by <hr>
+            child_items = [
+                c
+                for c in children[0].children
+                if isinstance(c, Tag) and not _is_header_or_footer_node(c)
+            ]
+            has_hr = any(
+                isinstance(c, Tag)
+                and (c.name == "hr" or c.find("hr", recursive=False) is not None)
+                for c in children[0].children
+            )
+            if has_hr and len(child_items) >= 2:
+                return child_items
+            # Continue unwrapping the single child container
+            curr = children[0]
+            continue
+            
+        if len(children) >= 2:
+            # If multiple child containers exist and any is a batch wrapper, recursively unwrap them
+            expanded: list[Tag] = []
+            for ch in children:
+                ch_raw = [gc for gc in ch.children if isinstance(gc, Tag)]
+                ch_had_hdr = any(
+                    _is_header_or_footer_node(gc)
+                    and bool(_clean_text(gc.get_text(" ", strip=True)))
+                    for gc in ch_raw
+                )
+                if ch_had_hdr:
+                    expanded.extend(_unwrap_sdui_container_items(ch))
+                else:
+                    expanded.append(ch)
+            return expanded
+        break
+        
+    # Return the leaf node as a single item if non-empty and not a header
+    clean_txt = _clean_text(curr.get_text(" ", strip=True))
+    return [curr] if clean_txt and not _is_header_or_footer_node(curr) else []
+
+
 def _get_container_entity_items(container: Tag) -> list[Tag]:
     """Extract top-level entity item tags from any DOM container (section or subpage main).
 
     Inspection cascade:
     1. Modern LinkedIn LazyColumn component (<div data-component-type="LazyColumn">).
-       Grabs entity-collection-item elements.
-    2. Direct [role="listitem"] elements.
+       Grabs entity-collection-item elements or SDUI skill components.
+    2. Direct [role="listitem"] elements (excluding nested skill endorsement sub-items).
     3. Direct <li> elements (ul > li or ol > li).
-    4. Top-level direct children.
+    4. Unwrapped SDUI container item divs.
     Always applies top-level filtering to prevent parent-child duplication.
     """
     candidates: list[Tag] = []
@@ -210,17 +391,34 @@ def _get_container_entity_items(container: Tag) -> list[Tag]:
     if items:
         candidates = items
     else:
-        # Strategy 2: [role="listitem"]
-        role_items = [el for el in search_root.select('[role="listitem"]') if isinstance(el, Tag)]
-        if role_items:
-            candidates = role_items
+        # Strategy 1b: SDUI skill items (com.linkedin.sdui.profile.skill)
+        sdui_skill_items = [
+            el
+            for el in search_root.select(
+                'div[componentkey^="com.linkedin.sdui.profile.skill"], '
+                'div[id^="com.linkedin.sdui.profile.skill"]'
+            )
+            if isinstance(el, Tag)
+        ]
+        if sdui_skill_items:
+            candidates = sdui_skill_items
         else:
-            # Strategy 3: <li> elements
-            lis = [li for li in search_root.select("ul > li, ol > li") if isinstance(li, Tag)]
-            if lis:
-                candidates = lis
-            elif lazy_col is not None:
-                candidates = [c for c in lazy_col.children if isinstance(c, Tag)]
+            # Strategy 2: [role="listitem"] (excluding nested endorsement sub-items inside skills)
+            role_items = [
+                el
+                for el in search_root.select('[role="listitem"]')
+                if isinstance(el, Tag) and not _is_nested_endorsement_listitem(el, search_root)
+            ]
+            if role_items:
+                candidates = role_items
+            else:
+                # Strategy 3: <li> elements
+                lis = [li for li in search_root.select("ul > li, ol > li") if isinstance(li, Tag)]
+                if lis:
+                    candidates = lis
+                else:
+                    # Strategy 4: Unwrap SDUI container / LazyColumn children
+                    candidates = _unwrap_sdui_container_items(search_root)
 
     return _filter_top_level_tags(candidates)
 
@@ -451,7 +649,7 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
             continue
 
         # Narrative description (including bullet list texts!)
-        if line not in ("…", "...", "more", "see more"):
+        if line not in ("…", "...", "more", "see more", "Present"):
             desc_parts.append(line)
 
     description: str | None = " ".join(desc_parts) if desc_parts else None
@@ -478,22 +676,106 @@ def _parse_experience_items(tag: Tag) -> list[ExperienceItem]:
     ]
 
 
-def _parse_education_item(tag: Tag) -> EducationItem:
-    """Extract structured fields from an education entry using semantic line classification.
+# Common academic degree and diploma keywords used to delimit education records
+_DEGREE_LINE_RE = re.compile(
+    r"\b(?:bachelor|master|b\.?\s*tech|m\.?\s*tech|b\.?\s*e\b|m\.?\s*e\b|b\.?\s*sc|m\.?\s*sc|"
+    r"mba|ph\.?d|doctor|diploma|high\s+school|senior\s+secondary|secondary|intermediate|"
+    r"class\s*(?:10|12|x|xii)|cbse|icse|isc|aissce|aissee|hsc|ssc|postgraduate|undergraduate|"
+    r"associate\s+of|certificate\s+in|b\.?\s*com|m\.?\s*com|b\.?\s*a\b|m\.?\s*a\b|bca|mca|bba)\b",
+    re.IGNORECASE,
+)
+# Academic institution indicators
+_SCHOOL_NAME_RE = re.compile(
+    r"\b(?:university|institute|college|school|vidyalaya|academy|polytechnic|iit|nit|iiit|"
+    r"bits\s+pilani|xlri|wharton|stanford)\b",
+    re.IGNORECASE,
+)
+# Date range or single year patterns in education
+_EDU_DATE_RE = re.compile(
+    r"(?:\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s*[-–—]\s*"
+    r"(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|\d{4}|Present)\b|"
+    r"\b\d{4}\s*[-–—]\s*(?:\d{4}|Present)\b)",
+    re.IGNORECASE,
+)
+_EDU_HEADER_RE = re.compile(r"^education(?:\s*\(\d+\))?$", re.IGNORECASE)
 
-    Extracts: School / Institution, Degree / Major, Dates, Grade / Honors, and full raw string.
-    Distinguishes grades/CGPA from dates to prevent field pollution.
+
+def _is_edu_start_line(lines: list[str], i: int) -> bool:
+    """Return True if lines[i] represents the start of a distinct school/institution entry."""
+    if i == 0:
+        return True
+    ln = lines[i]
+    prev = lines[i - 1]
+    # If previous line ends with a colon (e.g. 'Skills:', 'Coursework:'), it is a subfield, not a new school
+    if prev.rstrip().endswith(":"):
+        return False
+    # Numbers and percentages are grades or stats, not school names
+    if re.match(r"^\d", ln) or "%" in ln:
+        return False
+    # Non-school metadata indicators (grade, activities, skills, bullet points)
+    if re.match(
+        r"^(?:grade|cgpa|gpa|percentage|score|activities|skills|coursework|focus areas|-|•|\*)\b",
+        ln,
+        re.IGNORECASE,
+    ):
+        return False
+    # Date lines are not school names
+    if _EDU_DATE_RE.search(ln):
+        return False
+    next1 = lines[i + 1] if i + 1 < len(lines) else ""
+    next2 = lines[i + 2] if i + 2 < len(lines) else ""
+    # If line contains an institution keyword and is followed by degree/dates, it is a new school
+    if _SCHOOL_NAME_RE.search(ln) and (
+        _DEGREE_LINE_RE.search(next1)
+        or _EDU_DATE_RE.search(next1)
+        or _DEGREE_LINE_RE.search(next2)
+        or _EDU_DATE_RE.search(next2)
+    ):
+        return True
+    if not _DEGREE_LINE_RE.search(ln) and (
+        _DEGREE_LINE_RE.search(next1) or _EDU_DATE_RE.search(next1)
+    ):
+        return True
+    return False
+
+
+def _split_edu_lines(lines: list[str]) -> list[list[str]]:
+    """Split a combined list of education text lines into individual school card chunks.
+    
+    Prevents multiple degrees or institutions from being squashed into a single item's raw text.
     """
-    raw_lines = [
-        _clean_text(line)
-        for line in tag.stripped_strings
-        if _clean_text(line)
-        and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
-        and not UI_BADGE_PATTERN.search(line)
-    ]
-    lines = _dedupe_consecutive(raw_lines)
-    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
+    # Strip any leading section heading (e.g. "Education")
+    while lines and _EDU_HEADER_RE.match(lines[0]):
+        lines = lines[1:]
+    if not lines:
+        return []
+    chunks: list[list[str]] = []
+    curr: list[str] = [lines[0]]
+    has_meta = False
+    
+    # Iterate through lines and split whenever a new school boundary is detected after previous metadata
+    for i in range(1, len(lines)):
+        ln = lines[i]
+        if (
+            _EDU_DATE_RE.search(ln)
+            or _DEGREE_LINE_RE.search(ln)
+            or GRADE_PATTERN.search(ln)
+        ):
+            if len(curr) >= 1 and not _is_edu_start_line(lines, i):
+                has_meta = True
+        if has_meta and _is_edu_start_line(lines, i):
+            chunks.append(curr)
+            curr = [ln]
+            has_meta = False
+        else:
+            curr.append(ln)
+    if curr:
+        chunks.append(curr)
+    return chunks
 
+
+def _build_education_item_from_lines(lines: list[str], fallback_raw: str = "") -> EducationItem:
+    raw_text = " | ".join(lines) if lines else fallback_raw
     school: str | None = lines[0] if lines else None
     degree: str | None = None
     dates: str | None = None
@@ -501,25 +783,18 @@ def _parse_education_item(tag: Tag) -> EducationItem:
     activities: str | None = None
 
     for line in lines[1:]:
-        # Grade / CGPA pattern
         if not grade and GRADE_PATTERN.search(line):
             grade = line
             continue
-
-        # Activities pattern
         if not activities and ACTIVITIES_PATTERN.search(line):
             activities = line
             continue
-
-        # Dates / Year range pattern (e.g. "2018 - 2022", "May 2020")
         if not dates and (
             DATE_RANGE_PATTERN.search(line)
-            or re.search(r"\b\d{4}\s*[-–]\s*(?:\d{4}|Present)\b", line)
+            or re.search(r"\b\d{4}\s*[-–—]\s*(?:\d{4}|Present)\b", line)
         ):
             dates = line
             continue
-
-        # Degree / Field of study
         if not degree:
             degree = line
             continue
@@ -534,23 +809,80 @@ def _parse_education_item(tag: Tag) -> EducationItem:
     )
 
 
-def _parse_certification_item(tag: Tag) -> CertificationItem:
-    """Extract structured fields from a license / certification entry."""
-    lines = _clean_role_lines(tag)
-    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
+def _parse_education_items(tag: Tag) -> list[EducationItem]:
+    """Extract one or more structured EducationItem entries from a DOM tag."""
+    raw_lines = [
+        _clean_text(line)
+        for line in tag.stripped_strings
+        if _clean_text(line)
+        and not _matches_any_pattern(line, NOISE_LINE_PATTERNS)
+        and not UI_BADGE_PATTERN.search(line)
+    ]
+    lines = _dedupe_consecutive(raw_lines)
+    chunks = _split_edu_lines(lines)
+    return [_build_education_item_from_lines(chunk) for chunk in chunks if chunk]
 
+
+def _parse_education_item(tag: Tag) -> EducationItem:
+    """Extract structured fields from an education entry using semantic line classification."""
+    items = _parse_education_items(tag)
+    if items:
+        return items[0]
+    return EducationItem(raw="")
+
+
+# Header pattern for Licenses & Certifications
+_CERT_HEADER_RE = re.compile(
+    r"^(?:licenses?\s*(?:&|and)?\s*certifications?|certifications?)(?:\s*\(\d+\))?$",
+    re.IGNORECASE,
+)
+# Anchors identifying date lines or credential IDs for certificate separation
+_ISSUED_LINE_RE = re.compile(r"^(?:issued|expires|expired)\b", re.IGNORECASE)
+_CRED_ID_LINE_RE = re.compile(r"^credential\s+id\b", re.IGNORECASE)
+
+
+def _split_cert_lines(lines: list[str]) -> list[list[str]]:
+    """Split a squashed list of certificate lines into distinct credential chunks.
+    
+    Identifies 'Issued <date>' and 'Credential ID' anchors to separate multiple credentials
+    that were grouped into one raw DOM container.
+    """
+    # Remove any leading section title
+    while lines and _CERT_HEADER_RE.match(lines[0]):
+        lines = lines[1:]
+    if not lines:
+        return []
+    anchors: list[int] = []
+    # Find all date/credential ID anchor line indices
+    for i, ln in enumerate(lines):
+        if _ISSUED_LINE_RE.match(ln):
+            anchors.append(i)
+        elif _CRED_ID_LINE_RE.match(ln):
+            if i == 0 or not _ISSUED_LINE_RE.match(lines[i - 1]):
+                anchors.append(i)
+    # If 0 or 1 anchor, treat as a single certification entry
+    if len(anchors) <= 1:
+        return [lines]
+    # Each certificate starts ~2 lines before its 'Issued' date (Certificate Name, Issuer)
+    starts = [max(0, a - 2) for a in anchors]
+    starts[0] = 0
+    chunks: list[list[str]] = []
+    for idx, st in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        if st < end:
+            chunks.append(lines[st:end])
+    return chunks
+
+
+def _build_certification_item_from_lines(
+    lines: list[str], credential_url: str | None = None
+) -> CertificationItem:
+    raw_text = " | ".join(lines)
     name: str | None = lines[0] if lines else None
     issuer: str | None = None
     issue_date: str | None = None
     expiration_date: str | None = None
     credential_id: str | None = None
-    credential_url: str | None = None
-
-    cred_a = tag.find("a", href=True)
-    if cred_a and isinstance(cred_a, Tag):
-        href = str(cred_a.get("href", ""))
-        if "http" in href:
-            credential_url = href
 
     for line in lines[1:]:
         line_lower = line.lower()
@@ -580,22 +912,99 @@ def _parse_certification_item(tag: Tag) -> CertificationItem:
     )
 
 
-def _parse_project_item(tag: Tag) -> ProjectItem:
-    """Extract structured fields from an academic, personal, or professional project entry."""
+def _parse_certification_items(tag: Tag) -> list[CertificationItem]:
+    """Extract one or more structured CertificationItem entries from a DOM tag."""
     lines = _clean_role_lines(tag)
-    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
+    chunks = _split_cert_lines(lines)
+    if not chunks:
+        return []
+    credential_url: str | None = None
+    if len(chunks) == 1:
+        cred_a = tag.find("a", href=True)
+        if cred_a and isinstance(cred_a, Tag):
+            href = str(cred_a.get("href", ""))
+            if "http" in href:
+                credential_url = href
+    return [_build_certification_item_from_lines(ch, credential_url) for ch in chunks if ch]
 
+
+def _parse_certification_item(tag: Tag) -> CertificationItem:
+    """Extract structured fields from a license / certification entry."""
+    items = _parse_certification_items(tag)
+    if items:
+        return items[0]
+    return CertificationItem(raw="")
+
+
+# Regex to detect project dates (e.g. "Jan 2026 – Present", "2024 – 2025")
+_PROJ_HEADER_RE = re.compile(r"^projects?(?:\s*\(\d+\))?$", re.IGNORECASE)
+_PROJ_DATE_RE = re.compile(
+    r"^(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s*[-–—]\s*"
+    r"(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}|Present)|"
+    r"\d{4}\s*[-–—]\s*(?:\d{4}|Present))$",
+    re.IGNORECASE,
+)
+_ASSOC_RE = re.compile(r"^Associated with\b", re.IGNORECASE)
+
+
+def _is_proj_desc_line(ln: str) -> bool:
+    """Return True if ln represents project narrative description or noise rather than a title."""
+    if ln.startswith(("-", "•", "●", "*", "…", "...")):
+        return True
+    if ln.lower() in ("more", "see more", "show project", "project link", "see project"):
+        return True
+    if SKILLS_CHIP_PATTERN.search(ln) or _ASSOC_RE.match(ln):
+        return True
+    if len(ln) > 95 or ln.endswith("."):
+        return True
+    return False
+
+
+def _split_proj_lines(lines: list[str]) -> list[list[str]]:
+    """Split a combined sequence of project lines into individual project records.
+    
+    Identifies new project titles based on boundary lines (e.g. lines preceding dates or bullet descriptions).
+    """
+    while lines and _PROJ_HEADER_RE.match(lines[0]):
+        lines = lines[1:]
+    if not lines:
+        return []
+    chunks: list[list[str]] = []
+    curr: list[str] = [lines[0]]
+    saw_body = False
+    for i in range(1, len(lines)):
+        ln = lines[i]
+        next_ln = lines[i + 1] if i + 1 < len(lines) else ""
+        prev_ln = lines[i - 1]
+        is_new_title = False
+        if not _is_proj_desc_line(ln) and not _PROJ_DATE_RE.match(ln):
+            if _PROJ_DATE_RE.match(next_ln):
+                is_new_title = True
+            elif saw_body and (
+                SKILLS_CHIP_PATTERN.search(prev_ln)
+                or _ASSOC_RE.match(prev_ln)
+                or next_ln.startswith(("-", "•", "●", "*"))
+            ):
+                is_new_title = True
+        if is_new_title and curr:
+            chunks.append(curr)
+            curr = [ln]
+            saw_body = False
+        else:
+            curr.append(ln)
+            if _is_proj_desc_line(ln) or _PROJ_DATE_RE.match(ln):
+                saw_body = True
+    if curr:
+        chunks.append(curr)
+    return chunks
+
+
+def _build_project_item_from_lines(lines: list[str], url: str | None = None) -> ProjectItem:
+    raw_text = " | ".join(lines)
     title: str | None = lines[0] if lines else None
     dates: str | None = None
     description_parts: list[str] = []
     project_skills: list[str] | None = None
-    url: str | None = None
-
-    a_tag = tag.find("a", href=True)
-    if a_tag and isinstance(a_tag, Tag):
-        href = str(a_tag.get("href", ""))
-        if "http" in href and "linkedin.com" not in href:
-            url = href
 
     for line in lines[1:]:
         if not dates and (DATE_RANGE_PATTERN.search(line) or re.search(r"\b\d{4}\b", line)):
@@ -625,19 +1034,88 @@ def _parse_project_item(tag: Tag) -> ProjectItem:
     )
 
 
+def _parse_project_items(tag: Tag) -> list[ProjectItem]:
+    """Extract one or more structured ProjectItem entries from a DOM tag."""
+    lines = _clean_role_lines(tag)
+    chunks = _split_proj_lines(lines)
+    if not chunks:
+        return []
+    url: str | None = None
+    if len(chunks) == 1:
+        a_tag = tag.find("a", href=True)
+        if a_tag and isinstance(a_tag, Tag):
+            href = str(a_tag.get("href", ""))
+            if "http" in href and "linkedin.com" not in href:
+                url = href
+    return [_build_project_item_from_lines(ch, url) for ch in chunks if ch]
+
+
+def _parse_project_item(tag: Tag) -> ProjectItem:
+    """Extract structured fields from an academic, personal, or professional project entry."""
+    items = _parse_project_items(tag)
+    if items:
+        return items[0]
+    return ProjectItem(raw="")
+
+
+_LANG_HEADER_RE = re.compile(r"^languages?(?:\s*\(\d+\))?$", re.IGNORECASE)
+# Standard language proficiency descriptors
+_PROFICIENCY_RE = re.compile(
+    r"\b(?:proficiency|native|bilingual|elementary|limited working|"
+    r"professional working|full professional)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_language_items(tag: Tag) -> list[LanguageItem]:
+    """Extract one or more structured LanguageItem entries from a DOM tag.
+    
+    Pairs language names with their corresponding proficiency lines and handles multi-language
+    lists squashed into a single DOM element.
+    """
+    lines = _clean_role_lines(tag)
+    while lines and _LANG_HEADER_RE.match(lines[0]):
+        lines = lines[1:]
+    if not lines:
+        return []
+
+    prof_indices = [i for i, ln in enumerate(lines) if _PROFICIENCY_RE.search(ln)]
+    if len(prof_indices) <= 1:
+        return [
+            LanguageItem(
+                name=lines[0],
+                proficiency=lines[1] if len(lines) > 1 else None,
+                raw=" | ".join(lines),
+            )
+        ]
+
+    results: list[LanguageItem] = []
+    first_start = max(0, prof_indices[0] - 1)
+    for idx in range(0, first_start):
+        results.append(LanguageItem(name=lines[idx], proficiency=None, raw=lines[idx]))
+
+    # Split lines based on detected proficiency anchors
+    starts = [max(0, p_idx - 1) for p_idx in prof_indices]
+    for k, st in enumerate(starts):
+        end = starts[k + 1] if k + 1 < len(starts) else len(lines)
+        sub = lines[st:end]
+        if sub:
+            results.append(
+                LanguageItem(
+                    name=sub[0],
+                    proficiency=sub[1] if len(sub) > 1 else None,
+                    raw=" | ".join(sub),
+                )
+            )
+    return results
+
+
 def _parse_language_item(tag: Tag) -> LanguageItem:
     """Extract structured fields from a language proficiency entry."""
-    lines = _clean_role_lines(tag)
-    raw_text = " | ".join(lines) if lines else _clean_text(tag.get_text(separator=" | "))
-
-    name: str | None = lines[0] if lines else None
-    proficiency: str | None = lines[1] if len(lines) > 1 else None
-
-    return LanguageItem(
-        name=name,
-        proficiency=proficiency,
-        raw=raw_text,
-    )
+    items = _parse_language_items(tag)
+    if items:
+        return items[0]
+    return LanguageItem(raw="")
 
 
 def _parse_other_section(sec: Tag, heading: str) -> OtherSection | None:
@@ -797,16 +1275,37 @@ def _is_valid_skill(cand: str) -> bool:
     """Validate whether an extracted line is genuinely a skill name."""
     if not cand or len(cand) > 60:
         return False
-    if cand in ["Skills", "Show all", "Endorsements", "More profiles for you"]:
+    if cand in [
+        "Skills",
+        "Show all",
+        "Endorsements",
+        "More profiles for you",
+        "All",
+        "Industry Knowledge",
+        "Tools & Technologies",
+        "Interpersonal Skills",
+        "Other Skills",
+    ]:
+        return False
+    if re.search(r"^skills(?:\s*\(\d+\))?$", cand, re.IGNORECASE):
         return False
     if re.search(r"^\d+\s+endorsements?$", cand, re.IGNORECASE):
         return False
     if re.search(r"^show all\b", cand, re.IGNORECASE):
         return False
-    if re.search(r"\b(?:experiences? across|endorsed by)\b", cand, re.IGNORECASE):
+    if re.search(r"^passed\s+linkedin\s+skill\s+assessment$", cand, re.IGNORECASE):
         return False
     if re.search(
-        r"\b(?:engineer|developer|analyst|manager|consultant|architect)\s+at\b",
+        r"\b(?:\d+\s+(?:educational\s+)?experiences?\s+(?:at|across)|experiences? across|endorsed by)\b",
+        cand,
+        re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\b(?:engineer|developer|analyst|manager|consultant|architect|intern|"
+        r"trainee|fellow|fellowship|coordinator|director|president|lead|leader|"
+        r"editor|writer|designer|assistant|associate|specialist|member|server|"
+        r"teacher|professor|founder)\b.*\bat\s+\S+",
         cand,
         re.IGNORECASE,
     ):
@@ -814,15 +1313,26 @@ def _is_valid_skill(cand: str) -> bool:
     return True
 
 
+def _sanitize_details_soup(soup: BeautifulSoup) -> Tag:
+    """Strip nav, footer, aside, modals, and sidebar recommendation sections from a details page."""
+    for tag_name in STRIP_TAGS:
+        for tag in soup.find_all(tag_name):
+            tag.decompose()
+    for selector in STRIP_SELECTORS:
+        for tag in soup.select(selector):
+            tag.decompose()
+    main = soup.find("main") or soup
+    for sec in main.find_all("section"):
+        heading = _extract_section_heading(sec)
+        if heading and _matches_any_pattern(heading, SKIP_SECTION_PATTERNS):
+            sec.decompose()
+    return main
+
+
 def parse_skills_details(html: str) -> list[str]:
     """Parse all skills from a LinkedIn /details/skills/ page."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.select(
-        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
-    ):
-        tag.decompose()
-
-    main = soup.find("main") or soup
+    main = _sanitize_details_soup(soup)
     top_items = _get_container_entity_items(main)
 
     skills: list[str] = []
@@ -839,89 +1349,67 @@ def parse_skills_details(html: str) -> list[str]:
 def parse_education_details(html: str) -> list[EducationItem]:
     """Parse all education items from a LinkedIn /details/education/ page."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.select(
-        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
-    ):
-        tag.decompose()
-
-    main = soup.find("main") or soup
+    main = _sanitize_details_soup(soup)
     top_items = _get_container_entity_items(main)
     results: list[EducationItem] = []
     for it in top_items:
-        edu = _parse_education_item(it)
-        if edu.school or edu.raw:
-            results.append(edu)
+        for edu in _parse_education_items(it):
+            if edu.school or edu.raw:
+                results.append(edu)
     return results
 
 
 def parse_experience_details(html: str) -> list[ExperienceItem]:
     """Parse all experience items from a LinkedIn /details/experience/ page."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.select(
-        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
-    ):
-        tag.decompose()
-
-    main = soup.find("main") or soup
+    main = _sanitize_details_soup(soup)
     top_items = _get_container_entity_items(main)
     results: list[ExperienceItem] = []
     for it in top_items:
         exps = _parse_experience_items(it)
-        results.extend(exps)
+        for exp in exps:
+            if exp.title and re.match(r"^(?:experience|work experience)$", exp.title, re.I) and not exp.company:
+                continue
+            results.append(exp)
     return results
 
 
 def parse_certifications_details(html: str) -> list[CertificationItem]:
     """Parse all certifications from a LinkedIn /details/certifications/ page."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.select(
-        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
-    ):
-        tag.decompose()
-
-    main = soup.find("main") or soup
+    main = _sanitize_details_soup(soup)
     top_items = _get_container_entity_items(main)
     results: list[CertificationItem] = []
     for it in top_items:
-        cert = _parse_certification_item(it)
-        if cert.name or cert.raw:
-            results.append(cert)
+        for cert in _parse_certification_items(it):
+            if cert.name or cert.raw:
+                results.append(cert)
     return _dedupe_certifications(results)
 
 
 def parse_projects_details(html: str) -> list[ProjectItem]:
     """Parse all projects from a LinkedIn /details/projects/ page."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.select(
-        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
-    ):
-        tag.decompose()
-
-    main = soup.find("main") or soup
+    main = _sanitize_details_soup(soup)
     top_items = _get_container_entity_items(main)
     results: list[ProjectItem] = []
     for it in top_items:
-        proj = _parse_project_item(it)
-        if proj.title or proj.raw:
-            results.append(proj)
+        for proj in _parse_project_items(it):
+            if proj.title or proj.raw:
+                results.append(proj)
     return results
 
 
 def parse_languages_details(html: str) -> list[LanguageItem]:
     """Parse all languages from a LinkedIn /details/languages/ page."""
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.select(
-        "nav, footer, .global-nav, .global-footer, [role='dialog'], .artdeco-modal"
-    ):
-        tag.decompose()
-
-    main = soup.find("main") or soup
+    main = _sanitize_details_soup(soup)
     top_items = _get_container_entity_items(main)
     results: list[LanguageItem] = []
     for it in top_items:
-        lang = _parse_language_item(it)
-        if lang.name or lang.raw:
-            results.append(lang)
+        for lang in _parse_language_items(it):
+            if lang.name or lang.raw:
+                results.append(lang)
     return results
 
 
@@ -1473,15 +1961,24 @@ def parse_profile(
     top_card = None
 
     # Filter out outer layout containers, nested sections, and carousels
+    all_main_sections = main.find_all("section")
     candidate_sections = [
         sec
-        for sec in main.find_all("section")
+        for sec in all_main_sections
         if sec.get("aria-label") != "Primary content"
         and sec.get("aria-roledescription") != "carousel"
         and sec.get("data-testid") != "carousel"
         and not re.search(
             r"^\d+\s+notification", sec.get_text(separator=" ", strip=True), re.IGNORECASE
         )
+        and len(
+            [
+                child_sec
+                for child_sec in sec.find_all("section")
+                if child_sec is not sec and _extract_section_heading(child_sec)
+            ]
+        )
+        < 2
     ]
     # BeautifulSoup Tag.__hash__ serializes the entire subtree. Using Tags as
     # set members here makes nested-section filtering quadratic (and very slow
@@ -1527,9 +2024,13 @@ def parse_profile(
             except ValueError:
                 name_idx = 0
 
-            # Headline: scan immediate lines after name, skipping pronouns and buttons
-            for cand in filtered[name_idx + 1 : name_idx + 4]:
+            # Headline: scan immediate lines after name, skipping pronouns, connection badges, and buttons
+            for cand in filtered[name_idx + 1 : name_idx + 6]:
                 if PRONOUN_PATTERN.match(cand):
+                    continue
+                if CONNECTION_DEGREE_PATTERN.match(cand):
+                    continue
+                if cand in ("·", "\u00b7", "•"):
                     continue
                 if re.search(
                     r"\b(contact info|connections|connect|message|more|followers)\b",
@@ -1693,9 +2194,9 @@ def parse_profile(
         ):
             edu_items: list[EducationItem] = []
             for it in items:
-                edu_item = _parse_education_item(it)
-                if edu_item.raw:
-                    edu_items.append(edu_item)
+                for edu_item in _parse_education_items(it):
+                    if edu_item.raw:
+                        edu_items.append(edu_item)
             if edu_items:
                 education = _merge_structured_section_items("education", education, edu_items)
             continue
@@ -1718,8 +2219,11 @@ def parse_profile(
             _matches_any_pattern(heading, CERTIFICATIONS_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["certifications"]
         ):
-            cert_items = [_parse_certification_item(it) for it in items]
-            valid_certs = [c for c in cert_items if c.name or c.raw]
+            valid_certs: list[CertificationItem] = []
+            for it in items:
+                for c in _parse_certification_items(it):
+                    if c.name or c.raw:
+                        valid_certs.append(c)
             if valid_certs:
                 certifications = _merge_structured_section_items(
                     "certifications", certifications, valid_certs
@@ -1731,8 +2235,11 @@ def parse_profile(
             _matches_any_pattern(heading, PROJECTS_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["projects"]
         ):
-            proj_items = [_parse_project_item(it) for it in items]
-            valid_projs = [p for p in proj_items if p.title or p.raw]
+            valid_projs: list[ProjectItem] = []
+            for it in items:
+                for p in _parse_project_items(it):
+                    if p.title or p.raw:
+                        valid_projs.append(p)
             if valid_projs:
                 projects = _merge_structured_section_items("projects", projects, valid_projs)
                 continue
@@ -1742,10 +2249,18 @@ def parse_profile(
             _matches_any_pattern(heading, LANGUAGES_PATTERNS)
             or sec_id == KNOWN_SECTION_IDS["languages"]
         ):
-            lang_items = [_parse_language_item(it) for it in items]
-            valid_langs = [item for item in lang_items if item.name or item.raw]
+            valid_langs: list[LanguageItem] = []
+            for it in items:
+                for lang_item in _parse_language_items(it):
+                    if lang_item.name or lang_item.raw:
+                        valid_langs.append(lang_item)
             if valid_langs:
                 languages = _merge_structured_section_items("languages", languages, valid_langs)
+                # Keep unstructured/narrative language list in other_sections if no valid proficiency lines were matched
+                if not any(item.proficiency for item in valid_langs):
+                    parsed_other = _parse_other_section(sec, heading or "Languages")
+                    if parsed_other:
+                        other_sections.append(parsed_other)
                 continue
 
         # 4h. Route any other visible section into other_sections

@@ -83,6 +83,12 @@ PRONOUN_PATTERN: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# Top card connection degree badges (e.g., '· 3rd', '· 2nd', '3rd+') filtered from headline
+CONNECTION_DEGREE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^[·\u00b7•\-–—\s]*(?:1st|2nd|3rd\+?|\d+(?:st|nd|rd|th))\b.*$",
+    re.IGNORECASE,
+)
+
 # Interactive button labels filtered from experience and education raw text
 NOISE_LINE_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(

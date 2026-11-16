@@ -356,3 +356,130 @@ def test_offline_rework_kit_reparse_add_fixture_and_reparse_run(
     )
     assert regenerated["profile"]["headline"] == "Senior Software Engineer at Acme"
     assert "parse_warnings" not in regenerated["meta"]
+
+
+def test_post_sdui_update_dom_structures_extract_cleanly() -> None:
+    """Verify post-SDUI DOM layouts (no entity-collection-item, nested skill listitems, squashed subpages)."""
+    main_html = """
+    <html><body><main>
+      <section>
+        <h1>Avnish Kotambkar</h1>
+        <span>He/Him</span>
+        <span>· 3rd</span>
+        <div>Software Engineer at Innodata Inc.</div>
+        <div>Noida, Uttar Pradesh, India</div>
+        <div>Contact info</div>
+      </section>
+      <section>
+        <div>
+          <div><h2>Education</h2></div>
+          <div>
+            <div>
+              <p>Birla Institute of Technology and Science, Pilani</p>
+              <p>Bachelor of Engineering - B.E, Electrical and Electronics Engineering</p>
+              <p>Aug 2021 – Jul 2026</p>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div>
+          <div><h2>Skills (3)</h2></div>
+          <div>
+            <div>
+              <p>Node.js</p>
+              <div role="list"><div role="listitem">Software Engineer at Innodata Inc.</div></div>
+            </div>
+            <hr role="presentation"/>
+            <div>
+              <p>MongoDB</p>
+              <div role="list"><div role="listitem">2 experiences at MSD and 1 other company</div></div>
+            </div>
+            <hr role="presentation"/>
+            <div>
+              <p>PySpark</p>
+              <div role="list"><div role="listitem">Data Engineering &amp; Analytics Intern at MSD</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main></body></html>
+    """
+    edu_subpage = """
+    <html><body><main>
+      <div data-component-type="LazyColumn">
+        <div><p>Education</p></div>
+        <div>
+          <div>
+            <p>Birla Institute of Technology and Science, Pilani</p>
+            <p>Bachelor of Engineering - B.E, Electrical and Electronics Engineering</p>
+            <p>Aug 2021 – Jul 2026</p>
+            <p>Master of Science - M.Sc, Physics</p>
+            <p>Birla Institute of Technology and Science, Pilani</p>
+            <p>Master of Science - M.Sc, Physics</p>
+            <p>Aug 2021 – Jul 2026</p>
+            <p>Dr. Ambedkar College, Nagpur</p>
+            <p>Passed 12th Standard State Board Exam (MSBSHSE)</p>
+            <p>Jul 2019 – Apr 2021</p>
+            <p>97.5% in 12th Std State Board Exam</p>
+            <p>Montfort Secondary School</p>
+            <p>Passed 10th Standard Board Exam (CBSE)</p>
+            <p>Jun 2008 – Jun 2019</p>
+          </div>
+        </div>
+      </div>
+    </main></body></html>
+    """
+    cert_subpage = """
+    <html><body><main>
+      <div data-component-type="LazyColumn">
+        <div>
+          <p>Licenses &amp; certifications</p>
+          <p>The Structured Query Language (SQL)</p>
+          <p>Coursera</p>
+          <p>Issued Jul 2025</p>
+          <p>Skills:</p>
+          <p>PostgreSQL, SQL</p>
+          <p>Cash Flow Management</p>
+          <p>Coursera</p>
+          <p>Issued Jun 2025</p>
+          <p>Microsoft Excel</p>
+          <p>Udemy</p>
+          <p>Issued Mar 2025</p>
+        </div>
+      </div>
+    </main></body></html>
+    """
+    lang_subpage = """
+    <html><body><main>
+      <div data-component-type="LazyColumn">
+        <div><p>Languages</p></div>
+        <div>
+          <p>English</p>
+          <p>Full professional proficiency</p>
+          <p>Hindi</p>
+          <p>Native or bilingual proficiency</p>
+          <p>Marathi</p>
+          <p>Native or bilingual proficiency</p>
+        </div>
+      </div>
+    </main></body></html>
+    """
+    bundle = (
+        main_html
+        + "\n\n<!-- === SUBPAGE: https://www.linkedin.com/in/avnish-kotambkar/details/education/ === -->\n"
+        + edu_subpage
+        + "\n\n<!-- === SUBPAGE: https://www.linkedin.com/in/avnish-kotambkar/details/certifications/ === -->\n"
+        + cert_subpage
+        + "\n\n<!-- === SUBPAGE: https://www.linkedin.com/in/avnish-kotambkar/details/languages/ === -->\n"
+        + lang_subpage
+    )
+    doc, diags = reparse_single_html_bundle(
+        "avnish-kotambkar", "https://www.linkedin.com/in/avnish-kotambkar/", bundle
+    )
+    assert diags == []
+    assert doc.profile.headline == "Software Engineer at Innodata Inc."
+    assert doc.profile.skills == ["Node.js", "MongoDB", "PySpark"]
+    assert len(doc.profile.education or []) == 4
+    assert len(doc.profile.certifications or []) == 3
+    assert len(doc.profile.languages or []) == 3

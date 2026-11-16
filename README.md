@@ -90,6 +90,36 @@ The **LinkedIn Profile Extractor** is a command-line tool designed to process a 
 
 ---
 
+## ⚠️ Mandatory Maintenance Notice: Frequent LinkedIn SDUI Layout Changes
+
+> [!IMPORTANT]
+> ### 🔄 Ongoing Parser Maintenance Required
+> **LinkedIn updates its Server-Driven UI (SDUI) component hierarchy and DOM layout very frequently (often every few weeks or months).**
+>
+> When LinkedIn pushes an SDUI update:
+> 1. HTML containers, component keys, and CSS wrappers are renamed or reshuffled (e.g. moving from `div[componentkey*="entity-collection-item"]` to deeply nested dynamic wrappers, or virtualizing items inside `LazyColumn`).
+> 2. Subpage detail lists may squash multiple items into a single container or change how skills, certifications, educations, and languages are structured.
+> 3. **The Built-in Drift Alarm System**:
+>    - The extractor automatically monitors extracted data quality on every run via `src/profile_extractor/health.py`.
+>    - If 3 profiles in a run exhibit layout drift defects (e.g. junk headlines with `· 3rd` connection badges, squashed certifications, missing educations, or junk skill subheadings), **the pipeline automatically pauses and prompts you** before continuing.
+>    - A diagnostic drift report is saved to `output/_drift_reports/<timestamp>/` containing raw failed HTML sections, extracted profile JSONs, and an actionable diagnosis.
+> 4. **How to Rework & Update the Parser**:
+>    - See the comprehensive PDF maintainer guide: [`docs/DRIFT_ALARM_MAINTAINER_GUIDE.pdf`](docs/DRIFT_ALARM_MAINTAINER_GUIDE.pdf).
+>    - Use the offline rework kit subcommands:
+>      ```powershell
+>      # Inspect and test reparsing against captured drift report without live requests
+>      python -m profile_extractor reparse output/_drift_reports/<timestamp>
+>
+>      # Add the new drifted layout as an isolated offline regression test fixture
+>      python -m profile_extractor add-fixture output/_drift_reports/<timestamp>
+>
+>      # Re-generate final JSON outputs after updating parser rules (zero re-scraping)
+>      python -m profile_extractor reparse-run output/
+>      ```
+>    - Maintainers must periodically update `src/profile_extractor/parser.py` and `src/profile_extractor/parser_rules.py` whenever LinkedIn introduces new DOM shifts.
+
+---
+
 ## Architecture: Current PoC vs. Production Target
 
 ```
